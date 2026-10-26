@@ -344,9 +344,14 @@ static int write_code(pid_t pid, intptr_t addr, const void *buf, size_t len) {
     return (r || memcmp(chk, buf, len)) ? -1 : 0;
 }
 
-/* 60 FPS: connorh315's patch from shadPS4's ps4_cheats (LEGODimensions.xml), same address for
- * CUSA00935 v01.23 and CUSA01176 v01.24: mov edi,2 ; mov [rax],edi ; nop ; nop  (engine FPS mode 2) */
-#define LD_OFF_FPS60 0xa966ad
+/* 60 FPS: connorh315's patch from shadPS4's ps4_cheats (LEGODimensions.xml), same site for
+ * CUSA00935 v01.23 and CUSA01176 v01.24. shadPS4 patch addresses include the 0x400000 image base,
+ * so the patch's 0xa966ad is +0x6966ad here. The site is the engine's SetFPSMode(edi):
+ *   stock:   mov ebx,[rax] ; mov [rax],edi ; cmp edi,3 ; je ...
+ *   patched: mov edi,2     ; mov [rax],edi ; nop ; nop      (always FPS mode 2 = 60 FPS)
+ * Verified against a CUSA01176 v01.24 memory image. */
+#define LD_OFF_FPS60 0x6966ad
+static const uint8_t FPS60_STOCK[9] = {0x8b, 0x18, 0x89, 0x38, 0x83, 0xff, 0x03, 0x74, 0x11};
 static const uint8_t FPS60_BYTES[9] = {0xbf, 0x02, 0x00, 0x00, 0x00, 0x89, 0x38, 0x90, 0x90};
 
 static void apply_fps60(pid_t pid, intptr_t base) {
@@ -354,6 +359,11 @@ static void apply_fps60(pid_t pid, intptr_t base) {
     uint8_t cur[9];
     if (kernel_proc_copyout(pid, base + LD_OFF_FPS60, cur, sizeof cur)) { LOG("60 FPS: read failed"); return; }
     if (!memcmp(cur, FPS60_BYTES, sizeof cur)) { LOG("60 FPS patch already present"); return; }
+    if (memcmp(cur, FPS60_STOCK, sizeof cur)) {
+        LOG("60 FPS: unexpected bytes %02x %02x %02x %02x %02x %02x %02x %02x %02x; not patching", cur[0], cur[1],
+            cur[2], cur[3], cur[4], cur[5], cur[6], cur[7], cur[8]);
+        return;
+    }
     LOG("60 FPS: original bytes %02x %02x %02x %02x %02x %02x %02x %02x %02x", cur[0], cur[1], cur[2], cur[3],
         cur[4], cur[5], cur[6], cur[7], cur[8]);
     if (write_code(pid, base + LD_OFF_FPS60, FPS60_BYTES, sizeof FPS60_BYTES)) LOG("60 FPS patch write failed");
@@ -364,8 +374,8 @@ static void apply_fps60(pid_t pid, intptr_t base) {
  * 16-bit width (0x0780 = 1920) or height (0x0438 = 1080) immediate; only rewritten if it still holds
  * the stock value, so an unexpected build is left alone. */
 static const struct { uint32_t off; uint16_t stock; uint8_t is_w; } RES_SITES[6] = {
-    {0xb148f8, 1920, 1}, {0xb14902, 1080, 0}, {0xb14edc, 1920, 1},
-    {0xb14ee3, 1080, 0}, {0xb14f23, 1920, 1}, {0xb14f28, 1080, 0}};
+    {0x7148f8, 1920, 1}, {0x714902, 1080, 0}, {0x714edc, 1920, 1},   /* patch addresses - 0x400000 */
+    {0x714ee3, 1080, 0}, {0x714f23, 1920, 1}, {0x714f28, 1080, 0}};
 
 static void apply_resolution(pid_t pid, intptr_t base) {
     uint16_t w, h;
