@@ -14,3 +14,4 @@ __pycache__/
 .vs/
 .idea/
 .vscode/
+src/injector/ovl_renderer.c

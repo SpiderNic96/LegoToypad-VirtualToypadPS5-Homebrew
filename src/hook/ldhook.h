@@ -9,7 +9,7 @@
 #endif
 
 #define LDH_MAGIC   0x444D444Cu /* "LDMD" */
-#define LDH_VERSION 19
+#define LDH_VERSION 20
 #define LDH_PING    0x1D0CA7u
 
 /* Hooked imports, in this order (index into hook_off[] / orig[]) */
@@ -170,6 +170,23 @@ typedef struct {
         volatile uint32_t op, a, b;
         volatile int32_t result;
     } mbox;
+    /* console overlay UI (v20). While ext.mode != 0 the in-game text menu is replaced by the
+     * LegoToypad-style overlay the injector draws in the system UI. The open/close combo is still
+     * handled here so input is swallowed with no latency; while the overlay is open every change of
+     * the owner's buttons (plus the left stick as D-pad bits) is pushed into ring[]. */
+    struct {
+        volatile uint32_t mode;        /* injector: 1 = overlay UI active */
+        volatile uint32_t open;        /* hook: 1 while the overlay owns the controller */
+        volatile uint32_t open_seq;    /* hook: bumped on every open */
+        volatile uint32_t close_req;   /* injector: bump to ask the hook to close */
+        volatile uint32_t close_ack;   /* hook: = close_req once handled */
+        volatile uint32_t raw;         /* hook: player 1's live buttons while closed (sneak peek) */
+        volatile uint32_t wr;          /* hook: ring write counter */
+        volatile uint32_t heartbeat;   /* hook: pad reads seen in ext mode */
+        volatile uint32_t lease;       /* injector: bumped while the overlay is alive; if it stops
+                                          for ~200 pad reads the hook falls back to the text menu */
+        volatile uint32_t ring[32];    /* hook: buttons | stick-as-dpad on each change while open */
+    } ext;
 } ld_header;
 
 enum { LD_MB_PLACE_ID = 1, LD_MB_REMOVE = 2, LD_MB_CLEAR_ALL = 3 };

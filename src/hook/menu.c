@@ -958,8 +958,83 @@ static void close_menu(void) {
     HDR.menu_open = 0; HDR.state_seq++;
 }
 
+/* ------------------------------------------------------------ console overlay input (ext mode) */
+
+static int32_t ext_owner = -1;
+static uint32_t ext_last = 0xFFFFFFFFu;
+static int ext_armed;
+
+static void swallow(uint32_t *buttons, uint8_t *sticks) {
+    *buttons = 0;
+    sticks[0] = sticks[1] = sticks[2] = sticks[3] = 0x80;
+    sticks[4] = sticks[5] = 0;  /* analog L2/R2 */
+}
+
+/* The overlay is drawn by the injector in the system UI; this only owns the controller. */
+static void ext_frame(int k, int32_t handle, uint32_t *buttons, uint8_t *sticks, uint32_t combo) {
+    uint32_t b = *buttons;
+    HDR.ext.heartbeat++;
+    if (!HDR.ext.open) {
+        if (k == 0) HDR.ext.raw = b;
+        uint32_t hold_frames = HDR.opt_hold_ms / 33 + 1;
+        if ((b & combo) == combo) {
+            if (++h_hold[k] >= hold_frames) {
+                h_hold[k] = 0;
+                ext_owner = handle; ext_armed = 0; ext_last = 0xFFFFFFFFu;
+                HDR.ext.raw = 0;
+                HDR.ext.close_ack = HDR.ext.close_req;
+                HDR.ext.open_seq++;
+                __atomic_store_n(&HDR.ext.open, 1, __ATOMIC_RELEASE);
+                swallow(buttons, sticks);
+            }
+        } else h_hold[k] = 0;
+        return;
+    }
+    if (HDR.ext.close_req != HDR.ext.close_ack) {
+        HDR.ext.close_ack = HDR.ext.close_req;
+        __atomic_store_n(&HDR.ext.open, 0, __ATOMIC_RELEASE);
+        swallow(buttons, sticks);
+        return;
+    }
+    if (handle != ext_owner) { swallow(buttons, sticks); return; }   /* other players frozen too */
+    /* the same combo closes the overlay once it has been released after opening */
+    if ((b & combo) != combo) ext_armed = 1;
+    else if (ext_armed) {
+        __atomic_store_n(&HDR.ext.open, 0, __ATOMIC_RELEASE);
+        swallow(buttons, sticks);
+        return;
+    }
+    uint32_t nav = b | ld_grid_stick_direction(sticks[0], sticks[1]);
+    if (nav != ext_last) {
+        uint32_t w = HDR.ext.wr;
+        HDR.ext.ring[w & 31] = nav;
+        __atomic_store_n(&HDR.ext.wr, w + 1, __ATOMIC_RELEASE);
+        ext_last = nav;
+    }
+    swallow(buttons, sticks);
+}
+
+static uint32_t lease_seen, lease_frames;
+
+/* ext mode only while the injector keeps renewing its lease (it died / was replaced otherwise) */
+static int ext_alive(void) {
+    if (!HDR.ext.mode) return 0;
+    uint32_t l = HDR.ext.lease;
+    if (l != lease_seen) { lease_seen = l; lease_frames = 0; return 1; }
+    return ++lease_frames < 200;
+}
+
 void menu_frame(int32_t handle, uint32_t *buttons, uint8_t *sticks) {
     run_mailbox();
+    if (mode == M_CLOSED && ext_alive()) {
+        int kk = 0;
+        while (kk < 4 && h_id[kk] != handle && h_id[kk] != -1) kk++;
+        if (kk == 4) kk = 3;
+        h_id[kk] = handle;
+        ext_frame(kk, handle, buttons, sticks, HDR.opt_combo ? HDR.opt_combo : (B_L3 | B_R3));
+        return;
+    }
+    if (HDR.ext.open) __atomic_store_n(&HDR.ext.open, 0, __ATOMIC_RELEASE);   /* overlay switched off */
     uint32_t b = *buttons;
     uint32_t combo = HDR.opt_combo ? HDR.opt_combo : (B_L3 | B_R3);
     /* The left stick and D-pad share the menu navigation path. Read input

@@ -37,6 +37,7 @@
 
 #include "../hook/ldhook.h"
 #include "webremote.h"
+#include "vtp_api.h"
 
 #define WEB_DIR    "/data/ldmod/web"
 #define PREFS_FILE "/data/ldmod/web_prefs.txt"
@@ -162,6 +163,8 @@ static uint32_t bin_figure_id(int bin) {
 static pthread_mutex_t g_mx = PTHREAD_MUTEX_INITIALIZER;   /* game link, prefs, LEDs, status, snapshot, queue */
 static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;     /* signalled when the monitor completes a request */
 static struct { int valid; int used[7]; uint32_t id[7]; } g_snap;
+static vtp_ext g_ext;                         /* hook console-overlay state (ld_header.ext) */
+static struct { int mode; int close; } g_ext_req = {-1, 0};
 static struct {
     int state;               /* 0 idle, 1 queued, 2 written to the game, 3 complete */
     uint32_t op, a, b, req;
@@ -232,7 +235,7 @@ void web_attach(pid_t pid, intptr_t mem) {
 
 void web_detach(void) {
     pthread_mutex_lock(&g_mx);
-    g_pid = 0; g_mem = 0; g_snap.valid = 0;
+    g_pid = 0; g_mem = 0; g_snap.valid = 0; g_ext.valid = 0;
     if (g_q.state) { g_q.result = -2; g_q.state = 3; pthread_cond_broadcast(&g_cv); }
     snprintf(g_status, sizeof g_status, "LEGO Dimensions closed. Start it again on the PS5.");
     pthread_mutex_unlock(&g_mx);
@@ -249,15 +252,39 @@ void web_detach(void) {
 void web_service(pid_t pid, intptr_t mem) {
     ld_figure fig[LD_MAX_SLOTS];
     int ok = !kernel_proc_copyout(pid, mem + offsetof(ld_header, pad) + offsetof(ld_pad, fig), fig, sizeof fig);
+    __typeof__(((ld_header *)0)->ext) ext;
+    int eok = !kernel_proc_copyout(pid, mem + offsetof(ld_header, ext), &ext, sizeof ext);
     pthread_mutex_lock(&g_mx);
     if (ok) {
         g_snap.valid = 1;
         for (int i = 0; i < 7; i++) { g_snap.used[i] = fig[i].used != 0; g_snap.id[i] = fig[i].id; }
     }
+    int want_mode = g_ext_req.mode, want_close = g_ext_req.close;
+    g_ext_req.mode = -1; g_ext_req.close = 0;
+    if (eok) {
+        g_ext.valid = 1;
+        g_ext.mode = ext.mode; g_ext.open = ext.open; g_ext.open_seq = ext.open_seq;
+        g_ext.close_req = ext.close_req; g_ext.close_ack = ext.close_ack;
+        g_ext.raw = ext.raw; g_ext.wr = ext.wr; g_ext.heartbeat = ext.heartbeat;
+        memcpy(g_ext.ring, (const void *)ext.ring, sizeof g_ext.ring);
+    }
     int st = g_q.state;
     uint32_t op = g_q.op, a = g_q.a, b = g_q.b, req = g_q.req;
     uint64_t t0 = g_q.t0;
     pthread_mutex_unlock(&g_mx);
+
+    if (eok && want_mode >= 0 && (uint32_t)want_mode != ext.mode) {
+        uint32_t m = (uint32_t)want_mode;
+        kernel_proc_copyin(pid, &m, mem + offsetof(ld_header, ext) + offsetof(__typeof__(ext), mode), 4);
+    }
+    if (eok && ext.mode) {   /* keep the hook's overlay lease alive */
+        uint32_t l = ext.lease + 1;
+        kernel_proc_copyin(pid, &l, mem + offsetof(ld_header, ext) + offsetof(__typeof__(ext), lease), 4);
+    }
+    if (eok && want_close) {
+        uint32_t r = ext.close_req + 1;
+        kernel_proc_copyin(pid, &r, mem + offsetof(ld_header, ext) + offsetof(__typeof__(ext), close_req), 4);
+    }
 
     if (st == 1) {
         uint32_t done = 0, args[3] = {op, a, b};
@@ -602,47 +629,42 @@ static void api_favorites(sbuf *s) {
     sb_puts(s, "]}");
 }
 
-static void api_load(sbuf *s, int slot, int bin) {
-    if (slot < 0 || slot > 6) { err_json(s, "Invalid pad slot."); return; }
+int vtp_load(int slot, int bin, char *msg, size_t n) {
+    if (slot < 0 || slot > 6) { snprintf(msg, n, "Invalid pad slot."); return -1; }
     const entry_info *e = entry_by_bin(bin);
     uint32_t fid = e ? bin_figure_id(bin) : 0;
-    if (!fid) { err_json(s, "Unknown tag id."); return; }
+    if (!fid) { snprintf(msg, n, "Unknown tag id."); return -1; }
     pthread_mutex_lock(&g_cmd);
     int used[7]; uint32_t id[7];
     int v = SLOTS[slot].vtp, r;
     wait_snapshot();
-    if (read_pad(used, id)) { pthread_mutex_unlock(&g_cmd); err_json(s, "LEGO Dimensions isn't running with the Virtual Toy Pad."); return; }
+    if (read_pad(used, id)) { pthread_mutex_unlock(&g_cmd); snprintf(msg, n, "LEGO Dimensions isn't running with the Virtual Toy Pad."); return -2; }
     if (used[v]) {
         mailbox(LD_MB_REMOVE, (uint32_t)v, 0);
         usleep(100 * 1000);   /* let the game see the removal as its own event */
     }
     r = mailbox(LD_MB_PLACE_ID, (uint32_t)v, fid);
     pthread_mutex_unlock(&g_cmd);
-    char nm[32], msg[160];
-    if (r == 0) {
-        snprintf(msg, sizeof msg, "LOAD sent: %s -> %s", figure_name(fid, nm, sizeof nm), SLOTS[slot].label);
-        set_status("%s", msg);
-        ok_json(s, msg);
-    } else {
-        snprintf(msg, sizeof msg, r == -3 ? "The game didn't respond (paused or loading?). Try again."
-                                          : "Could not place %s.", figure_name(fid, nm, sizeof nm));
-        set_status("%s", msg);
-        err_json(s, msg);
-    }
+    char nm[32];
+    if (r == 0) snprintf(msg, n, "LOAD sent: %s -> %s", figure_name(fid, nm, sizeof nm), SLOTS[slot].label);
+    else snprintf(msg, n, r == -3 ? "The game didn't respond (paused or loading?). Try again."
+                                  : "Could not place %s.", figure_name(fid, nm, sizeof nm));
+    set_status("%s", msg);
+    return r;
 }
 
-static void api_move(sbuf *s, int src, int dst) {
-    if (src < 0 || src > 6 || dst < 0 || dst > 6) { err_json(s, "Invalid pad slot."); return; }
+int vtp_move(int src, int dst, char *msg, size_t n) {
+    if (src < 0 || src > 6 || dst < 0 || dst > 6) { snprintf(msg, n, "Invalid pad slot."); return -1; }
     pthread_mutex_lock(&g_cmd);
     int used[7]; uint32_t id[7];
     int a = SLOTS[src].vtp, b = SLOTS[dst].vtp;
     wait_snapshot();
     if (read_pad(used, id) || !used[a]) {
         pthread_mutex_unlock(&g_cmd);
-        err_json(s, "There is nothing tracked on that pad to move.");
-        return;
+        snprintf(msg, n, "There is nothing tracked on that pad to move.");
+        return -1;
     }
-    if (a == b) { pthread_mutex_unlock(&g_cmd); ok_json(s, "MOVE sent"); return; }
+    if (a == b) { pthread_mutex_unlock(&g_cmd); snprintf(msg, n, "MOVE sent"); return 0; }
     uint32_t fa = id[a], fb = used[b] ? id[b] : 0;
     /* lift first, let the game see the pickup, then place (LegoToypad/emulators use 500 ms) */
     int r = mailbox(LD_MB_REMOVE, (uint32_t)a, 0);
@@ -651,34 +673,91 @@ static void api_move(sbuf *s, int src, int dst) {
     r |= mailbox(LD_MB_PLACE_ID, (uint32_t)b, fa);
     if (fb) r |= mailbox(LD_MB_PLACE_ID, (uint32_t)a, fb);
     pthread_mutex_unlock(&g_cmd);
-    char nm[32], msg[160];
-    snprintf(msg, sizeof msg, "%s sent: %s -> %s", fb ? "SWAP" : "MOVE", figure_name(fa, nm, sizeof nm), SLOTS[dst].label);
-    set_status("%s", r ? "Move failed (game paused or loading?)" : msg);
-    if (r) err_json(s, "Move failed (game paused or loading?)");
-    else ok_json(s, msg);
+    char nm[32], nm2[32];
+    if (r) snprintf(msg, n, "Move failed (game paused or loading?)");
+    else if (fb) snprintf(msg, n, "SWAP sent: %s <-> %s", figure_name(fa, nm, sizeof nm), figure_name(fb, nm2, sizeof nm2));
+    else snprintf(msg, n, "MOVE sent: %s -> %s", figure_name(fa, nm, sizeof nm), SLOTS[dst].label);
+    set_status("%s", msg);
+    return r;
 }
 
-static void api_clear(sbuf *s, int slot) {
-    if (slot < 0 || slot > 6) { err_json(s, "Invalid pad slot."); return; }
+int vtp_clear(int slot, char *msg, size_t n) {
+    if (slot < 0 || slot > 6) { snprintf(msg, n, "Invalid pad slot."); return -1; }
     pthread_mutex_lock(&g_cmd);
     int r = mailbox(LD_MB_REMOVE, (uint32_t)SLOTS[slot].vtp, 0);
     pthread_mutex_unlock(&g_cmd);
-    char msg[96];
-    snprintf(msg, sizeof msg, "CLEAR sent: %s", SLOTS[slot].label);
-    if (r == 0) { set_status("%s", msg); ok_json(s, msg); }
-    else err_json(s, r == -1 ? "That pad is already empty." : "The game didn't respond. Try again.");
+    if (r == 0) { snprintf(msg, n, "CLEAR sent: %s", SLOTS[slot].label); set_status("%s", msg); }
+    else snprintf(msg, n, r == -1 ? "That pad is already empty." : "The game didn't respond. Try again.");
+    return r;
 }
 
-static void api_clearall(sbuf *s) {
+int vtp_clearall(char *msg, size_t n) {
     pthread_mutex_lock(&g_cmd);
     int r = mailbox(LD_MB_CLEAR_ALL, 0, 0);
     pthread_mutex_unlock(&g_cmd);
-    if (r == 0) { set_status("Clear all pad sent"); ok_json(s, "Clear all pad sent"); }
-    else err_json(s, "The game didn't respond. Try again.");
+    if (r == 0) { snprintf(msg, n, "Clear all pad sent: all 7 slots cleared."); set_status("%s", msg); }
+    else snprintf(msg, n, "The game didn't respond. Try again.");
+    return r;
+}
+
+static void api_load(sbuf *s, int slot, int bin) {
+    char msg[160];
+    if (vtp_load(slot, bin, msg, sizeof msg) == 0) ok_json(s, msg); else err_json(s, msg);
+}
+
+static void api_move(sbuf *s, int src, int dst) {
+    char msg[160];
+    if (vtp_move(src, dst, msg, sizeof msg) == 0) ok_json(s, msg); else err_json(s, msg);
+}
+
+static void api_clear(sbuf *s, int slot) {
+    char msg[160];
+    if (vtp_clear(slot, msg, sizeof msg) == 0) ok_json(s, msg); else err_json(s, msg);
+}
+
+static void api_clearall(sbuf *s) {
+    char msg[160];
+    if (vtp_clearall(msg, sizeof msg) == 0) ok_json(s, msg); else err_json(s, msg);
 }
 
 static void api_favorite(sbuf *s, int bin) {
     if (!entry_by_bin(bin)) { err_json(s, "Nothing on this pad to favorite."); return; }
+    int now = vtp_toggle_favorite(bin);
+    sb_printf(s, "{\"ok\":true,\"favorited\":%s}", now ? "true" : "false");
+}
+
+/* ------------------------------------------------------------ console overlay services */
+
+int vtp_pad(int used[7], int bin[7], uint32_t fid[7]) {
+    int u[7]; uint32_t id[7];
+    int r = read_pad(u, id);
+    for (int i = 0; i < 7; i++) {
+        int v = SLOTS[i].vtp;
+        used[i] = u[v];
+        fid[i] = u[v] ? id[v] : 0;
+        const fig_info *f = u[v] ? fig_by_id(id[v]) : 0;
+        bin[i] = f ? f->bin : 0;
+    }
+    return r;
+}
+
+int vtp_favorites(int *bins, int max) {
+    pthread_mutex_lock(&g_mx);
+    int n = g_nfav < max ? g_nfav : max;
+    memcpy(bins, g_fav, (size_t)n * sizeof *bins);
+    pthread_mutex_unlock(&g_mx);
+    return n;
+}
+
+int vtp_is_favorite(int bin) {
+    int r = 0;
+    pthread_mutex_lock(&g_mx);
+    for (int i = 0; i < g_nfav; i++) if (g_fav[i] == bin) r = 1;
+    pthread_mutex_unlock(&g_mx);
+    return r;
+}
+
+int vtp_toggle_favorite(int bin) {
     pthread_mutex_lock(&g_mx);
     int at = -1;
     for (int i = 0; i < g_nfav; i++) if (g_fav[i] == bin) at = i;
@@ -686,7 +765,52 @@ static void api_favorite(sbuf *s, int bin) {
     else if (g_nfav < 256) g_fav[g_nfav++] = bin;
     save_prefs();
     pthread_mutex_unlock(&g_mx);
-    sb_printf(s, "{\"ok\":true,\"favorited\":%s}", at >= 0 ? "false" : "true");
+    return at < 0;
+}
+
+int vtp_sort_get(void) { pthread_mutex_lock(&g_mx); int v = g_sort; pthread_mutex_unlock(&g_mx); return v; }
+void vtp_sort_set(int v) { pthread_mutex_lock(&g_mx); if (v >= 0 && v <= 6) { g_sort = v; save_prefs(); } pthread_mutex_unlock(&g_mx); }
+int vtp_led_mirror(void) { pthread_mutex_lock(&g_mx); int v = g_led_mirror; pthread_mutex_unlock(&g_mx); return v; }
+void vtp_led_mirror_set(int on) { pthread_mutex_lock(&g_mx); g_led_mirror = on != 0; save_prefs(); pthread_mutex_unlock(&g_mx); }
+void vtp_status_set(const char *msg) { set_status("%s", msg); }
+
+void vtp_leds(int mode[3], uint8_t rgb[3][3], float intensity[3]) {
+    uint64_t now = ms_now();
+    pthread_mutex_lock(&g_mx);
+    for (int r = 0; r < 3; r++) {
+        uint8_t cr, cg, cb;
+        float in = led_frame(&g_led[r], now, &cr, &cg, &cb);
+        /* LegoToypad CalibrateLedColor: the wire's white point is (255,110,24) */
+        int R = cr, G = cg * 255 / 110, B = cb * 255 / 24;
+        rgb[r][0] = (uint8_t)(R > 255 ? 255 : R);
+        rgb[r][1] = (uint8_t)(G > 255 ? 255 : G);
+        rgb[r][2] = (uint8_t)(B > 255 ? 255 : B);
+        mode[r] = g_led[r].mode;
+        intensity[r] = g_led[r].mode == LED_OFF ? 0.0f : in;
+    }
+    pthread_mutex_unlock(&g_mx);
+}
+
+int vtp_leds_animating(void) {
+    pthread_mutex_lock(&g_mx);
+    int a = 0;
+    for (int r = 0; r < 3; r++) a |= g_led[r].mode == LED_FLASH || g_led[r].mode == LED_FADE;
+    pthread_mutex_unlock(&g_mx);
+    return a;
+}
+
+void vtp_ext_snapshot(vtp_ext *e) {
+    pthread_mutex_lock(&g_mx);
+    *e = g_ext;
+    if (g_pid <= 0) e->valid = 0;
+    pthread_mutex_unlock(&g_mx);
+}
+
+void vtp_ext_request(int mode, int close) {
+    pthread_mutex_lock(&g_mx);
+    if (mode >= 0) g_ext_req.mode = mode;
+    if (close) g_ext_req.close = 1;
+    pthread_mutex_unlock(&g_mx);
 }
 
 /* ------------------------------------------------------------ HTTP */

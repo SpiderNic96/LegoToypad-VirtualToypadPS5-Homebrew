@@ -22,6 +22,27 @@ An unofficial ELF payload that lets you play the PS4 version of LEGO Dimensions 
 
 The payload stores data in `/data/ldmod` on the PS5. PSN sign-in is not required.
 
+### Console overlay (LegoToypad picker on the TV)
+
+With `overlay=1` in `/data/ldmod/config.ini` (the default) and the `ui` art folder copied to
+`/data/ldmod/web/ui`, the payload loads a small renderer into the PS5 system UI and **L3 + R3**
+opens harrysof's LegoToypad picker over the game instead of the text menu:
+
+- **Pad screen:** D-pad/left stick picks a pad; **X** opens Load / Move / Clear; **Square** moves
+  the figure; **R1** goes straight to loading; **L1** clears; **Triangle** toggles the live toypad
+  LED colours; **Circle** closes.
+- **Worlds / roster / builds:** **X** opens or loads, **Circle** goes back, **L1/R1** change the
+  sort (Default, Year 1, Year 2, User, Favorites, Story), **Triangle** favourites a figure.
+- **Sneak peek:** hold **L2** during gameplay to see the pads, occupants and LEDs in the screen
+  corners (`peek_buttons`, `peek_size`).
+- `fast_load=1` closes the picker after a figure is loaded. `overlay_textures=2` switches the art
+  to PNG files if it stays blank on your firmware.
+
+If the renderer cannot start (see `/data/ldmod/ldinject.log` and `/system_tmp/vtpovl_shellui.log`)
+the classic text menu keeps working. Do not run another SceShellUI overlay (Common FPS, HUD) at the
+same time. Build the art pack from a LegoToypad checkout with
+`python3 tools/build_ui_pack.py <LegoToypad> <web folder>`.
+
 ## Build from source
 
 On Linux or WSL, install `clang`, `ld.lld`, `make`, `gcc`, `xxd`, Python 3, `pyelftools`, and the [PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk).
@@ -41,5 +62,7 @@ This private repository includes essential source code, build scripts, figure ta
 ## Credits, license, and disclaimer
 
 Created by **HeitorSpectre**. This is an independent, unofficial project not affiliated with LEGO, Warner Bros., or the game's developers. All trademarks belong to their respective owners. Users are responsible for using their own game copies lawfully.
+
+The console overlay re-implements the picker of [LegoToypad](https://github.com/harrysof/LegoToypad) by **harrysof** (MIT) and builds its art from LegoToypad's assets. Its SceShellUI loader in `src/overlay` comes from **Common FPS** by **porhe911 / erickdavestech** and `shsrv` by **John Törnblom** (GPL-3.0-or-later); `stb_image.h` is by Sean Barrett (public domain / MIT).
 
 `src/injector/pt.c` and `src/injector/pt.h` include work by **John Törnblom (2024)** under **GPL-3.0-or-later**. The original notices are preserved. See `COPYING` for the license terms. The release ZIP includes the corresponding source code in `Codigo-Fonte.zip`.

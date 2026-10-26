@@ -30,6 +30,8 @@
 #include "pt.h"
 #include "blob.h"   /* LDHOOK_BIN / LDHOOK_BIN_len, generated from build/ldhook.bin */
 #include "webremote.h"
+#include "cui.h"
+#include "../overlay/controller/ovl_controller.h"
 
 #define DATA_DIR  "/data/ldmod"
 #define TAG_DIR   DATA_DIR "/tags"
@@ -93,9 +95,11 @@ static struct {
     uint32_t hold_ms, draw_text, notify_menu, force_fake, restore_pad, capture_selection, fps60, resolution;
     uint32_t combo;
     char combo_txt[64];
-} cfg = {250, 1, 0, 0, 0, 0, 1, 1080, 0x2 | 0x4, "L3+R3"};
+    uint32_t overlay, peek_size, fast_load, overlay_textures, peek;
+    char peek_txt[64];
+} cfg = {250, 1, 0, 0, 0, 0, 1, 1080, 0x2 | 0x4, "L3+R3", 1, 2, 1, 0, 0x100, "L2"};
 
-#define CONFIG_VERSION 2
+#define CONFIG_VERSION 3
 
 /* ScePad button names accepted in menu_buttons= */
 static const struct { const char *name; uint32_t bit; } BUTTONS[] = {
@@ -140,9 +144,18 @@ static void write_config(void) {
                "# Put back the figures from the last session when the game starts (1/0)\nrestore_pad=%u\n"
                "# Diagnostic capture of Characters UI (1/0; disabled by default)\ncapture_selection=%u\n"
                "# Patch the engine to target 60 FPS instead of 30 (connorh315's patch; 1/0)\nfps60=%u\n"
-               "# Internal render resolution: 1080 (game default), 1440 or 2160\nresolution=%u\n",
+               "# Internal render resolution: 1080 (game default), 1440 or 2160\nresolution=%u\n\n"
+               "# Console overlay: LegoToypad's toypad picker drawn by the PS5 system UI (1/0).\n"
+               "# menu_buttons open it; with 0 (or if it cannot start) the classic text menu is used.\n"
+               "overlay=%u\n"
+               "# Buttons held during gameplay to peek at the toypad (LegoToypad sneak peek)\npeek_buttons=%s\n"
+               "# Peek size: 0 off, 1 small, 2 medium, 3 large\npeek_size=%u\n"
+               "# Close the picker after loading a figure (LegoToypad fast loading; 1/0)\nfast_load=%u\n"
+               "# Overlay texture path: 0 auto, 1 pixel upload, 2 PNG files (try 2 if the art stays blank)\n"
+               "overlay_textures=%u\n",
             CONFIG_VERSION, cfg.combo_txt, cfg.hold_ms, cfg.draw_text, cfg.notify_menu, cfg.force_fake,
-            cfg.restore_pad, cfg.capture_selection, cfg.fps60, cfg.resolution);
+            cfg.restore_pad, cfg.capture_selection, cfg.fps60, cfg.resolution, cfg.overlay, cfg.peek_txt,
+            cfg.peek_size, cfg.fast_load, cfg.overlay_textures);
     fclose(f);
 }
 
@@ -164,17 +177,27 @@ static void load_config(void) {
         else if (sscanf(line, "capture_selection=%u", &v) == 1) cfg.capture_selection = v;
         else if (sscanf(line, "fps60=%u", &v) == 1) cfg.fps60 = v;
         else if (sscanf(line, "resolution=%u", &v) == 1) cfg.resolution = v;
+        else if (sscanf(line, "overlay=%u", &v) == 1) cfg.overlay = v;
+        else if (sscanf(line, "peek_size=%u", &v) == 1) cfg.peek_size = v > 3 ? 3 : v;
+        else if (sscanf(line, "fast_load=%u", &v) == 1) cfg.fast_load = v;
+        else if (sscanf(line, "overlay_textures=%u", &v) == 1) cfg.overlay_textures = v > 2 ? 0 : v;
+        else if (sscanf(line, "peek_buttons=%63[^\r\n]", txt) == 1) {
+            uint32_t m = parse_combo(txt);
+            if (m) { cfg.peek = m; snprintf(cfg.peek_txt, sizeof cfg.peek_txt, "%s", txt); }
+        }
         else if (sscanf(line, "menu_buttons=%63[^\r\n]", txt) == 1) {
             uint32_t m = parse_combo(txt);
             if (m) { cfg.combo = m; snprintf(cfg.combo_txt, sizeof cfg.combo_txt, "%s", txt); }
         }
     }
     fclose(f);
-    if (ver < CONFIG_VERSION) {   /* old config (menu was on TRIANGLE): upgrade it */
-        cfg.hold_ms = 250;
-        cfg.combo = 0x2 | 0x4;
-        snprintf(cfg.combo_txt, sizeof cfg.combo_txt, "L3+R3");
-        write_config();
+    if (ver < CONFIG_VERSION) {
+        if (ver < 2) {   /* old config (menu was on TRIANGLE) */
+            cfg.hold_ms = 250;
+            cfg.combo = 0x2 | 0x4;
+            snprintf(cfg.combo_txt, sizeof cfg.combo_txt, "L3+R3");
+        }
+        write_config();   /* adds the console overlay settings */
         LOG("config upgraded to version %d", CONFIG_VERSION);
     }
 }
@@ -765,6 +788,7 @@ static void monitor(pid_t pid, intptr_t mem, intptr_t base) {
         /* web remote: runs its queued figure commands and pad snapshot here, on this thread */
         for (int i = 0; i < 4 && proc_alive_fast(pid); i++) {
             web_service(pid, mem);
+            ovl_ctl_tick();   /* console overlay: loads/services the ShellUI renderer (kernel r/w lives here) */
             usleep(25 * 1000);
         }
     }
@@ -789,6 +813,12 @@ int main(void) {
     }
     LOG("started (blob %u bytes)", (unsigned)LDHOOK_BIN_len);
     web_start();
+    {
+        cui_config cc = {(int)cfg.overlay, cfg.peek, (int)cfg.peek_size, (int)cfg.fast_load, (int)cfg.overlay_textures, cfg.combo};
+        cui_configure(&cc);
+        ovl_ctl_enable((int)cfg.overlay);
+        if (cfg.overlay) cui_start();
+    }
     notify("LEGO Dimensions: Virtual Toy Pad is active.\nStart the game.");
     for (;;) {
         char title[10];

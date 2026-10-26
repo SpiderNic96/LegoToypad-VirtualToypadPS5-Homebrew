@@ -1,0 +1,44 @@
+/* shsrv v0.20 pt.* under ovl_ names (Virtual-Toy-Pad already links an older pt.c) */
+#pragma once
+#define pt_attach ovl_pt_attach
+#define pt_await_child ovl_pt_await_child
+#define pt_await_exec ovl_pt_await_exec
+#define pt_backtrace ovl_pt_backtrace
+#define pt_bind ovl_pt_bind
+#define pt_call ovl_pt_call
+#define pt_trace_me ovl_pt_trace_me
+#define pt_close ovl_pt_close
+#define pt_continue ovl_pt_continue
+#define pt_copyin ovl_pt_copyin
+#define pt_copyout ovl_pt_copyout
+#define pt_detach ovl_pt_detach
+#define pt_dup2 ovl_pt_dup2
+#define pt_follow_exec ovl_pt_follow_exec
+#define pt_follow_fork ovl_pt_follow_fork
+#define pt_getargv ovl_pt_getargv
+#define pt_getchar ovl_pt_getchar
+#define pt_getint ovl_pt_getint
+#define pt_getlong ovl_pt_getlong
+#define pt_getregs ovl_pt_getregs
+#define pt_getshort ovl_pt_getshort
+#define pt_mmap ovl_pt_mmap
+#define pt_mprotect ovl_pt_mprotect
+#define pt_msync ovl_pt_msync
+#define pt_munmap ovl_pt_munmap
+#define pt_perror ovl_pt_perror
+#define pt_pipe ovl_pt_pipe
+#define pt_rdup ovl_pt_rdup
+#define pt_recvmsg ovl_pt_recvmsg
+#define pt_resolve ovl_pt_resolve
+#define pt_sceKernelGetProcParam ovl_pt_sceKernelGetProcParam
+#define pt_setchar ovl_pt_setchar
+#define pt_setint ovl_pt_setint
+#define pt_setlong ovl_pt_setlong
+#define pt_setregs ovl_pt_setregs
+#define pt_setshort ovl_pt_setshort
+#define pt_setsockopt ovl_pt_setsockopt
+#define pt_signal ovl_pt_signal
+#define pt_socket ovl_pt_socket
+#define pt_step ovl_pt_step
+#define pt_syscall ovl_pt_syscall
+#include "pt.h"

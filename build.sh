@@ -6,5 +6,6 @@ if ! python3 -c "import elftools" 2>/dev/null; then
   exit 1
 fi
 make -C src/hook
+make -C src/overlay
 make -C src/injector
 echo "Built build/ldinject.elf"
