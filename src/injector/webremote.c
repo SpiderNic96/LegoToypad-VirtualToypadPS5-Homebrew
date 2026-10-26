@@ -159,7 +159,15 @@ static uint32_t bin_figure_id(int bin) {
 
 /* ------------------------------------------------------------ shared state */
 
-static pthread_mutex_t g_mx = PTHREAD_MUTEX_INITIALIZER;   /* game link, prefs, LEDs, status */
+static pthread_mutex_t g_mx = PTHREAD_MUTEX_INITIALIZER;   /* game link, prefs, LEDs, status, snapshot, queue */
+static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;     /* signalled when the monitor completes a request */
+static struct { int valid; int used[7]; uint32_t id[7]; } g_snap;
+static struct {
+    int state;               /* 0 idle, 1 queued, 2 written to the game, 3 complete */
+    uint32_t op, a, b, req;
+    int32_t result;
+    uint64_t t0;
+} g_q;
 static pthread_mutex_t g_cmd = PTHREAD_MUTEX_INITIALIZER;  /* one figure command at a time */
 static pid_t g_pid;
 static intptr_t g_mem;
@@ -217,57 +225,95 @@ static void load_prefs(void) {
 
 void web_attach(pid_t pid, intptr_t mem) {
     pthread_mutex_lock(&g_mx);
-    g_pid = pid; g_mem = mem;
+    g_pid = pid; g_mem = mem; g_snap.valid = 0; g_q.state = 0;
     snprintf(g_status, sizeof g_status, "Connected to LEGO Dimensions on the PS5.");
     pthread_mutex_unlock(&g_mx);
 }
 
 void web_detach(void) {
     pthread_mutex_lock(&g_mx);
-    g_pid = 0; g_mem = 0;
+    g_pid = 0; g_mem = 0; g_snap.valid = 0;
+    if (g_q.state) { g_q.result = -2; g_q.state = 3; pthread_cond_broadcast(&g_cv); }
     snprintf(g_status, sizeof g_status, "LEGO Dimensions closed. Start it again on the PS5.");
     pthread_mutex_unlock(&g_mx);
 }
 
-static int game_link(pid_t *pid, intptr_t *mem) {
-    pthread_mutex_lock(&g_mx);
-    *pid = g_pid; *mem = g_mem;
-    pthread_mutex_unlock(&g_mx);
-    return *pid > 0 && *mem;
-}
 
-/* read the 7 VTP slots: used flag and figure id */
-static int read_pad(int used[7], uint32_t id[7]) {
-    pid_t pid; intptr_t mem;
-    for (int i = 0; i < 7; i++) { used[i] = 0; id[i] = 0; }
-    if (!game_link(&pid, &mem)) return -1;
+/* The SDK's kernel memory access (kernel_proc_copyin/out) goes through one shared pipe and is
+ * NOT safe to use from several threads at once. So the web threads never touch game memory:
+ * the injector's monitor thread calls web_service() every loop, which refreshes a snapshot of
+ * the pad and runs at most one queued mailbox request. Web threads only read the snapshot and
+ * queue requests. */
+#define MB_OFF(f) (offsetof(ld_header, mbox) + offsetof(__typeof__(((ld_header *)0)->mbox), f))
+
+void web_service(pid_t pid, intptr_t mem) {
     ld_figure fig[LD_MAX_SLOTS];
-    if (kernel_proc_copyout(pid, mem + offsetof(ld_header, pad) + offsetof(ld_pad, fig), fig, sizeof fig)) return -1;
-    for (int i = 0; i < 7; i++) { used[i] = fig[i].used != 0; id[i] = fig[i].id; }
-    return 0;
+    int ok = !kernel_proc_copyout(pid, mem + offsetof(ld_header, pad) + offsetof(ld_pad, fig), fig, sizeof fig);
+    pthread_mutex_lock(&g_mx);
+    if (ok) {
+        g_snap.valid = 1;
+        for (int i = 0; i < 7; i++) { g_snap.used[i] = fig[i].used != 0; g_snap.id[i] = fig[i].id; }
+    }
+    int st = g_q.state;
+    uint32_t op = g_q.op, a = g_q.a, b = g_q.b, req = g_q.req;
+    uint64_t t0 = g_q.t0;
+    pthread_mutex_unlock(&g_mx);
+
+    if (st == 1) {
+        uint32_t done = 0, args[3] = {op, a, b};
+        kernel_proc_copyout(pid, mem + MB_OFF(done), &done, 4);
+        kernel_proc_copyin(pid, args, mem + MB_OFF(op), sizeof args);
+        req = done + 1;
+        kernel_proc_copyin(pid, &req, mem + MB_OFF(req), 4);
+        pthread_mutex_lock(&g_mx);
+        g_q.req = req; g_q.t0 = ms_now(); g_q.state = 2;
+        pthread_mutex_unlock(&g_mx);
+    } else if (st == 2) {
+        uint32_t done = 0;
+        int32_t res = -3;   /* game not polling input: paused in a system menu, or loading */
+        kernel_proc_copyout(pid, mem + MB_OFF(done), &done, 4);
+        int finished = done == req;
+        if (finished) kernel_proc_copyout(pid, mem + MB_OFF(result), &res, 4);
+        if (finished || ms_now() - t0 > 3000) {
+            pthread_mutex_lock(&g_mx);
+            g_q.result = res; g_q.state = 3;
+            pthread_cond_broadcast(&g_cv);
+            pthread_mutex_unlock(&g_mx);
+        }
+    }
 }
 
-/* one mailbox request, waiting until the game has handled it (it polls on every pad read) */
+/* the 7 VTP slots from the latest snapshot */
+static int read_pad(int used[7], uint32_t id[7]) {
+    pthread_mutex_lock(&g_mx);
+    int ok = g_pid > 0 && g_snap.valid;
+    for (int i = 0; i < 7; i++) { used[i] = ok && g_snap.used[i]; id[i] = ok ? g_snap.id[i] : 0; }
+    pthread_mutex_unlock(&g_mx);
+    return ok ? 0 : -1;
+}
+
+/* queue one mailbox request and wait for the monitor thread to complete it (callers hold g_cmd) */
 static int mailbox(uint32_t op, uint32_t a, uint32_t b) {
-    pid_t pid; intptr_t mem;
-    if (!game_link(&pid, &mem)) return -2;
-    intptr_t mb = mem + offsetof(ld_header, mbox);
-    uint32_t req = 0, done = 0;
-    kernel_proc_copyout(pid, mb + offsetof(typeof(((ld_header *)0)->mbox), done), &done, 4);
-    uint32_t args[3] = {op, a, b};
-    kernel_proc_copyin(pid, args, mb + offsetof(typeof(((ld_header *)0)->mbox), op), sizeof args);
-    req = done + 1;
-    kernel_proc_copyin(pid, &req, mb + offsetof(typeof(((ld_header *)0)->mbox), req), 4);
-    for (uint64_t t0 = ms_now(); ms_now() - t0 < 3000;) {
-        kernel_proc_copyout(pid, mb + offsetof(typeof(((ld_header *)0)->mbox), done), &done, 4);
-        if (done == req) {
-            int32_t res = -1;
-            kernel_proc_copyout(pid, mb + offsetof(typeof(((ld_header *)0)->mbox), result), &res, 4);
-            return res;
-        }
-        usleep(10 * 1000);
+    pthread_mutex_lock(&g_mx);
+    if (g_pid <= 0) { pthread_mutex_unlock(&g_mx); return -2; }
+    g_q.op = op; g_q.a = a; g_q.b = b; g_q.state = 1;
+    uint64_t t0 = ms_now();
+    while (g_q.state != 3 && g_pid > 0 && ms_now() - t0 < 5000) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_nsec += 50 * 1000000L;
+        if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+        pthread_cond_timedwait(&g_cv, &g_mx, &ts);
     }
-    return -3;   /* game not polling input: paused in a system menu, or loading */
+    int r = g_q.state == 3 ? g_q.result : -3;
+    g_q.state = 0;
+    pthread_mutex_unlock(&g_mx);
+    return r;
+}
+
+/* wait for the next snapshot so a follow-up read sees the result of the last command */
+static void wait_snapshot(void) {
+    usleep(60 * 1000);
 }
 
 static const char *figure_name(uint32_t fid, char *buf, size_t n) {
@@ -564,6 +610,7 @@ static void api_load(sbuf *s, int slot, int bin) {
     pthread_mutex_lock(&g_cmd);
     int used[7]; uint32_t id[7];
     int v = SLOTS[slot].vtp, r;
+    wait_snapshot();
     if (read_pad(used, id)) { pthread_mutex_unlock(&g_cmd); err_json(s, "LEGO Dimensions isn't running with the Virtual Toy Pad."); return; }
     if (used[v]) {
         mailbox(LD_MB_REMOVE, (uint32_t)v, 0);
@@ -589,6 +636,7 @@ static void api_move(sbuf *s, int src, int dst) {
     pthread_mutex_lock(&g_cmd);
     int used[7]; uint32_t id[7];
     int a = SLOTS[src].vtp, b = SLOTS[dst].vtp;
+    wait_snapshot();
     if (read_pad(used, id) || !used[a]) {
         pthread_mutex_unlock(&g_cmd);
         err_json(s, "There is nothing tracked on that pad to move.");

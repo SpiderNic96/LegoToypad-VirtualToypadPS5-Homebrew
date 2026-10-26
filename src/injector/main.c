@@ -212,6 +212,8 @@ static pid_t find_game(char title[10]) {
     return found;
 }
 
+static int proc_alive_fast(pid_t pid) { return kernel_get_proc(pid) != 0; }
+
 static int proc_alive(pid_t pid) {
     char title[10];
     return kernel_get_proc(pid) != 0 && find_game(title) == pid;
@@ -760,7 +762,11 @@ static void monitor(pid_t pid, intptr_t mem, intptr_t base) {
             }
             if (f) fclose(f);
         }
-        usleep(100 * 1000);
+        /* web remote: runs its queued figure commands and pad snapshot here, on this thread */
+        for (int i = 0; i < 4 && proc_alive_fast(pid); i++) {
+            web_service(pid, mem);
+            usleep(25 * 1000);
+        }
     }
     LOG("game exited");
 }
