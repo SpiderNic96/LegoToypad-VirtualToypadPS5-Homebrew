@@ -281,8 +281,9 @@ This project stands on other people's work:
 ## License and disclaimer
 
 The source code is **GPL-3.0-or-later** (see `COPYING`); files from other projects keep their
-notices (`src/overlay/shsrv/LICENSE`, file headers). LegoToypad material is MIT — see
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+notices (`src/overlay/shsrv/LICENSE`, SPDX file headers). LegoToypad material is MIT and the
+phone app's Inter font is SIL OFL 1.1 — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and
+`licenses/`.
 
 This is an independent, unofficial project, not affiliated with or endorsed by the LEGO Group,
 Warner Bros. Interactive, TT Games or Sony. All trademarks, character names, logos and artwork belong

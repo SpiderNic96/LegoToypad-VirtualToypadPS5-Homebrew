@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later  (C) 2026 SpiderNic96; ports LegoToypad (MIT, harrysof) layouts
 """Build the on-console overlay art for the PS5 Virtual Toy Pad ("ui" pack).
 
 The console overlay is drawn by the PS5 system UI from pre-rendered textures, so every
@@ -693,8 +694,6 @@ SOFT = ("ledo", "ledp", "glowsel", "glowmove", "tileglow", "btnhalo", "panel", "
 def main(ltp: Path, web: Path):
     A = ltp / "Assets"
     global FONT
-    if (A / "Fonts" / "sfpro.ttf").is_file():
-        FONT = str(A / "Fonts" / "sfpro.ttf")
     cat = json.loads((web / "catalog.json").read_text(encoding="utf-8"))
     img = lambda url: web / "img" / url.split("/img/")[1].split("?")[0]
     out = web / "ui"

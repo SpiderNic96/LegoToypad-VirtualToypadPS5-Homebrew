@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later  (C) 2026 SpiderNic96
 # Build the /data/ldmod/web folder (phone remote + console overlay art) from a LegoToypad checkout.
 #   usage: tools/make_web_bundle.sh <path to harrysof/LegoToypad checkout> [output dir, default build/web]
 # Needs: python3 with pillow, numpy, fonttools, brotli; a host C compiler (gcc or cc).

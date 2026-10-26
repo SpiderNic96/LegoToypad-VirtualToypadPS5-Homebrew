@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later  (C) 2026 SpiderNic96; ports LegoToypad (MIT, harrysof) layouts
 """Build the LegoToypad phone remote bundle served by the PS5 Virtual Toy Pad payload.
 
 Mirrors LegoToypad's BuildCatalogJson()/EntryJson() (main.cpp) from the same data model

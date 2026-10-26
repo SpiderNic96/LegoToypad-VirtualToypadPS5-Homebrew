@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT  (the output extends LegoToypad's MIT generate_assets.py, (C) 2026 Sofiane Belkacem Nacer)
 """Make ltp_generate.py: LegoToypad's own generate_assets.py (MIT, harrysof) plus a few lines
 that also dump the data model it builds (franchises, rosters, vehicle builds, assets) as
 ps5_model.json, which tools/build_bundle.py turns into the phone/console bundle.

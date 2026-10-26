@@ -1,4 +1,5 @@
-/* shsrv v0.20 pt.* under ovl_ names (Virtual-Toy-Pad already links an older pt.c) */
+/* shsrv v0.20 pt.* under ovl_ names (Virtual-Toy-Pad already links an older pt.c)
+ * SPDX-License-Identifier: GPL-3.0-or-later  (C) 2024 John Törnblom */
 #pragma once
 #define pt_attach ovl_pt_attach
 #define pt_await_child ovl_pt_await_child

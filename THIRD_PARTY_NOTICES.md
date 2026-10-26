@@ -2,6 +2,8 @@
 
 ## LegoToypad — MIT License
 
+(Also in `licenses/LegoToypad-MIT.txt`.)
+
 The console picker in `src/injector/cui.c` re-implements LegoToypad's picker, `tools/bundle/patch_gen.py`
 extends LegoToypad's `generate_assets.py`, and the release's `data/ldmod/web` folder contains
 LegoToypad's phone web app (unchanged) and assets rendered from LegoToypad's asset tree
@@ -48,8 +50,15 @@ See `src/overlay/shsrv/LICENSE`.
 
 ## Inter — SIL Open Font License 1.1
 
-`InterVariable.woff2` in the phone web app (shipped by LegoToypad) is the Inter typeface by
-Rasmus Andersson (https://rsms.me/inter/), licensed under the SIL Open Font License 1.1.
+`InterVariable.woff2` in the phone web app (shipped by LegoToypad) is the Inter typeface,
+Copyright (c) 2016 The Inter Project Authors, licensed under the SIL Open Font License 1.1 —
+full text in `licenses/Inter-OFL.txt` (also included in the release).
+
+## LEGO Dimensions 60 FPS / resolution patches
+
+The patch sites and bytes come from connorh315's LEGO Dimensions patches as published in
+shadPS4's community patch collection; the payload re-implements them for the PS5 and credits
+the author.
 
 ## Game material
 

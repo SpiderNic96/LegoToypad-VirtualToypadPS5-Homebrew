@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later  (C) 2026 SpiderNic96; ports LegoToypad (MIT, harrysof) layouts
 """Refuse a renderer ELF the ShellUI loader cannot apply (it handles RELATIVE / 64 / GLOB_DAT only)."""
 import sys
 from elftools.elf.elffile import ELFFile

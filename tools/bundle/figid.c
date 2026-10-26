@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later  (C) 2026 SpiderNic96 */
 /* host tool: print the LEGO Dimensions figure id of each 180-byte tag file given on the command line */
 #include <stdio.h>
 #include <stdint.h>
