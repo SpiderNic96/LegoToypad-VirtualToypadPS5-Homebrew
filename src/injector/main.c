@@ -34,7 +34,7 @@
 #define TAG_DIR   DATA_DIR "/tags"
 #define LOG_FILE  DATA_DIR "/ldinject.log"
 
-static const char *TITLE_IDS[] = {"CUSA00935", 0}; /* US, the only build verified so far */
+static const char *TITLE_IDS[] = {"CUSA00935", "CUSA01176", 0}; /* US 1.23; EU 1.24 (same eboot layout per the 60 FPS patch data) */
 
 /* ---------------------------------------------------------------- utils */
 
@@ -80,10 +80,10 @@ static uint64_t now_ms(void) {
 /* ------------------------------------------------------------- config */
 
 static struct {
-    uint32_t hold_ms, draw_text, notify_menu, force_fake, restore_pad, capture_selection;
+    uint32_t hold_ms, draw_text, notify_menu, force_fake, restore_pad, capture_selection, fps60, resolution;
     uint32_t combo;
     char combo_txt[64];
-} cfg = {250, 1, 0, 0, 0, 0, 0x2 | 0x4, "L3+R3"};
+} cfg = {250, 1, 0, 0, 0, 0, 1, 1080, 0x2 | 0x4, "L3+R3"};
 
 #define CONFIG_VERSION 2
 
@@ -128,9 +128,11 @@ static void write_config(void) {
                "# Also show the highlighted menu entry as a system notification (1/0)\nnotify_menu=%u\n"
                "# Use the virtual Toy Pad even when a real one is plugged in (1/0)\nforce_fake=%u\n"
                "# Put back the figures from the last session when the game starts (1/0)\nrestore_pad=%u\n"
-               "# Diagnostic capture of Characters UI (1/0; disabled by default)\ncapture_selection=%u\n",
+               "# Diagnostic capture of Characters UI (1/0; disabled by default)\ncapture_selection=%u\n"
+               "# Patch the engine to target 60 FPS instead of 30 (connorh315's patch; 1/0)\nfps60=%u\n"
+               "# Internal render resolution: 1080 (game default), 1440 or 2160\nresolution=%u\n",
             CONFIG_VERSION, cfg.combo_txt, cfg.hold_ms, cfg.draw_text, cfg.notify_menu, cfg.force_fake,
-            cfg.restore_pad, cfg.capture_selection);
+            cfg.restore_pad, cfg.capture_selection, cfg.fps60, cfg.resolution);
     fclose(f);
 }
 
@@ -150,6 +152,8 @@ static void load_config(void) {
         else if (sscanf(line, "force_fake=%u", &v) == 1) cfg.force_fake = v;
         else if (sscanf(line, "restore_pad=%u", &v) == 1) cfg.restore_pad = v;
         else if (sscanf(line, "capture_selection=%u", &v) == 1) cfg.capture_selection = v;
+        else if (sscanf(line, "fps60=%u", &v) == 1) cfg.fps60 = v;
+        else if (sscanf(line, "resolution=%u", &v) == 1) cfg.resolution = v;
         else if (sscanf(line, "menu_buttons=%63[^\r\n]", txt) == 1) {
             uint32_t m = parse_combo(txt);
             if (m) { cfg.combo = m; snprintf(cfg.combo_txt, sizeof cfg.combo_txt, "%s", txt); }
@@ -338,6 +342,57 @@ static int write_code(pid_t pid, intptr_t addr, const void *buf, size_t len) {
     uint8_t chk[32];
     kernel_proc_copyout(pid, addr, chk, len);
     return (r || memcmp(chk, buf, len)) ? -1 : 0;
+}
+
+/* 60 FPS: connorh315's patch from shadPS4's ps4_cheats (LEGODimensions.xml), same address for
+ * CUSA00935 v01.23 and CUSA01176 v01.24: mov edi,2 ; mov [rax],edi ; nop ; nop  (engine FPS mode 2) */
+#define LD_OFF_FPS60 0xa966ad
+static const uint8_t FPS60_BYTES[9] = {0xbf, 0x02, 0x00, 0x00, 0x00, 0x89, 0x38, 0x90, 0x90};
+
+static void apply_fps60(pid_t pid, intptr_t base) {
+    if (!cfg.fps60) { LOG("60 FPS patch disabled in config"); return; }
+    uint8_t cur[9];
+    if (kernel_proc_copyout(pid, base + LD_OFF_FPS60, cur, sizeof cur)) { LOG("60 FPS: read failed"); return; }
+    if (!memcmp(cur, FPS60_BYTES, sizeof cur)) { LOG("60 FPS patch already present"); return; }
+    LOG("60 FPS: original bytes %02x %02x %02x %02x %02x %02x %02x %02x %02x", cur[0], cur[1], cur[2], cur[3],
+        cur[4], cur[5], cur[6], cur[7], cur[8]);
+    if (write_code(pid, base + LD_OFF_FPS60, FPS60_BYTES, sizeof FPS60_BYTES)) LOG("60 FPS patch write failed");
+    else LOG("60 FPS patch applied at +0x%x", LD_OFF_FPS60);
+}
+
+/* Internal resolution: connorh315's patch, same six sites for v01.23 and v01.24. Each site holds a
+ * 16-bit width (0x0780 = 1920) or height (0x0438 = 1080) immediate; only rewritten if it still holds
+ * the stock value, so an unexpected build is left alone. */
+static const struct { uint32_t off; uint16_t stock; uint8_t is_w; } RES_SITES[6] = {
+    {0xb148f8, 1920, 1}, {0xb14902, 1080, 0}, {0xb14edc, 1920, 1},
+    {0xb14ee3, 1080, 0}, {0xb14f23, 1920, 1}, {0xb14f28, 1080, 0}};
+
+static void apply_resolution(pid_t pid, intptr_t base) {
+    uint16_t w, h;
+    switch (cfg.resolution) {
+    case 1080: LOG("resolution: game default (1920x1080)"); return;
+    case 1440: w = 2560; h = 1440; break;
+    case 2160: w = 3840; h = 2160; break;
+    default: LOG("resolution=%u not supported (use 1080, 1440 or 2160); keeping default", cfg.resolution); return;
+    }
+    uint16_t cur[6];
+    for (int i = 0; i < 6; i++) {
+        if (kernel_proc_copyout(pid, base + RES_SITES[i].off, &cur[i], 2)) { LOG("resolution: read failed"); return; }
+        uint16_t want = RES_SITES[i].is_w ? w : h;
+        if (cur[i] != RES_SITES[i].stock && cur[i] != want) {
+            LOG("resolution: +0x%x holds 0x%04x, expected 0x%04x; not patching", RES_SITES[i].off, cur[i],
+                RES_SITES[i].stock);
+            return;
+        }
+    }
+    for (int i = 0; i < 6; i++) {
+        uint16_t want = RES_SITES[i].is_w ? w : h;
+        if (cur[i] != want && write_code(pid, base + RES_SITES[i].off, &want, 2)) {
+            LOG("resolution: write failed at +0x%x", RES_SITES[i].off);
+            return;
+        }
+    }
+    LOG("resolution: internal render set to %ux%u", w, h);
 }
 
 static int install_render_hook(pid_t pid, intptr_t base, intptr_t target) {
@@ -682,10 +737,14 @@ int main(void) {
         }
         if (!base || verify_build(pid, base)) {
             LOG("unsupported build or base not found (base=0x%lx)", (long)base);
-            notify("LEGO Dimensions: unsupported game version (v1.23 required).");
+            notify("LEGO Dimensions: unsupported game version (US v1.23 or EU v1.24 required).");
             while (proc_alive(pid)) sleep(1);
             continue;
         }
+#ifndef PROBE_ONLY
+        apply_fps60(pid, base);
+        apply_resolution(pid, base);
+#endif
         /* wait for the dynamic linker to bind the imports we are going to replace */
         for (int i = 0; i < 200; i++) {
             uint64_t got = 0;
