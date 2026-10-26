@@ -344,6 +344,42 @@ static int write_code(pid_t pid, intptr_t addr, const void *buf, size_t len) {
     return (r || memcmp(chk, buf, len)) ? -1 : 0;
 }
 
+/* Code shift: EU CUSA01176 v01.24 is the same build layout as US v01.23 except that the code from
+ * somewhere after the render target (0xc9c870) onward sits 0x10 bytes earlier. Every data offset and
+ * GOT slot is unchanged. The shift is detected from the DrawCharacterIcon prologue and applied to the
+ * five code offsets past that point (DrawCharacterIcon, icon draw, selection draw, UI sprite draw and
+ * the HUD portrait return address). Verified against a CUSA01176 v01.24 memory image. */
+static intptr_t g_code_shift;
+
+static int detect_code_shift(pid_t pid, intptr_t base) {
+    static const uint8_t pro[6] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57};
+    static const intptr_t fns[4] = {LD_OFF_DRAW_CHAR_ICON, LD_OFF_ICON_DRAW, LD_OFF_SELECTION_DRAW, LD_OFF_DRAW_UI_SPRITE};
+    static const intptr_t shifts[2] = {0, -0x10};
+    for (int s = 0; s < 2; s++) {
+        int ok = 1;
+        for (int i = 0; i < 4 && ok; i++) {
+            uint8_t b[6];
+            if (kernel_proc_copyout(pid, base + fns[i] + shifts[s], b, 6)) return -1;
+            ok = !memcmp(b, pro, 6) || (i < 3 && b[0] == 0xE9);   /* E9 = already hooked by us */
+        }
+        /* the HUD portrait call must return into DrawCharacterIcon's caller */
+        if (ok) {
+            uint8_t c[5];
+            int32_t rel;
+            intptr_t ret = LD_OFF_HUD_ICON_RET + shifts[s];
+            if (kernel_proc_copyout(pid, base + ret - 5, c, 5) || c[0] != 0xE8) ok = 0;
+            else { memcpy(&rel, c + 1, 4); ok = ret + rel == LD_OFF_DRAW_CHAR_ICON + shifts[s]; }
+        }
+        if (ok) {
+            g_code_shift = shifts[s];
+            LOG("code layout: %s (shift %ld)", s ? "EU v01.24" : "US v01.23", (long)g_code_shift);
+            return 0;
+        }
+    }
+    LOG("code layout: icon functions not found at the known offsets; refusing to inject");
+    return -1;
+}
+
 /* 60 FPS: connorh315's patch from shadPS4's ps4_cheats (LEGODimensions.xml), same site for
  * CUSA00935 v01.23 and CUSA01176 v01.24. shadPS4 patch addresses include the 0x400000 image base,
  * so the patch's 0xa966ad is +0x6966ad here. The site is the engine's SetFPSMode(edi):
@@ -433,7 +469,7 @@ static int install_render_hook(pid_t pid, intptr_t base, intptr_t target) {
 static int install_dci_hook(pid_t pid, intptr_t base, intptr_t target) {
     static const uint8_t prologue[6] = {0x55, 0x48, 0x89, 0xe5, 0x41, 0x57};
     uint8_t cur[6], pad[16];
-    kernel_proc_copyout(pid, base + LD_OFF_DRAW_CHAR_ICON, cur, 6);
+    kernel_proc_copyout(pid, base + (LD_OFF_DRAW_CHAR_ICON + g_code_shift), cur, 6);
     kernel_proc_copyout(pid, base + LD_OFF_TRAMPOLINE2, pad, 16);
     if (memcmp(cur, prologue, 6) && !(cur[0] == 0xE9)) { LOG("DrawCharacterIcon prologue changed"); return -1; }
     int is_zero = 1;
@@ -442,10 +478,10 @@ static int install_dci_hook(pid_t pid, intptr_t base, intptr_t target) {
     uint8_t tr[14] = {0xFF, 0x25, 0, 0, 0, 0};
     memcpy(tr + 6, &target, 8);
     if (write_code(pid, base + LD_OFF_TRAMPOLINE2, tr, sizeof tr)) { LOG("trampoline 2 write failed"); return -1; }
-    int32_t rel = (int32_t)(LD_OFF_TRAMPOLINE2 - (LD_OFF_DRAW_CHAR_ICON + 5));
+    int32_t rel = (int32_t)(LD_OFF_TRAMPOLINE2 - ((LD_OFF_DRAW_CHAR_ICON + g_code_shift) + 5));
     uint8_t jmp[6] = {0xE9, 0, 0, 0, 0, 0x90};
     memcpy(jmp + 1, &rel, 4);
-    if (write_code(pid, base + LD_OFF_DRAW_CHAR_ICON, jmp, 6)) { LOG("DrawCharacterIcon patch failed"); return -1; }
+    if (write_code(pid, base + (LD_OFF_DRAW_CHAR_ICON + g_code_shift), jmp, 6)) { LOG("DrawCharacterIcon patch failed"); return -1; }
     LOG("icon capture hook installed");
     return 0;
 }
@@ -501,17 +537,17 @@ static intptr_t inject(pid_t pid, intptr_t base) {
     h->fn.line_print = base + LD_OFF_LINE_PRINT;
     h->fn.flag_render = base + LD_OFF_FLAG_RENDER;
     h->fn.orig_render = base + LD_OFF_RENDER_TARGET;
-    h->fn.draw_char_icon = base + LD_OFF_DRAW_CHAR_ICON;
+    h->fn.draw_char_icon = base + (LD_OFF_DRAW_CHAR_ICON + g_code_shift);
     h->fn.icon_widget = base + LD_OFF_ICON_WIDGET;
     h->fn.cam_mat = base + LD_OFF_CAM_MAT;
     h->fn.cam_pos = base + LD_OFF_CAM_POS;
-    h->fn.dci_resume = base + LD_OFF_DRAW_CHAR_ICON + 6;
-    h->fn.icon_draw = base + LD_OFF_ICON_DRAW;
-    h->fn.icon_resume = base + LD_OFF_ICON_DRAW + 6;
-    h->fn.sel_resume = base + LD_OFF_SELECTION_DRAW + 6;
-    h->fn.draw_ui_sprite = base + LD_OFF_DRAW_UI_SPRITE;
+    h->fn.dci_resume = base + (LD_OFF_DRAW_CHAR_ICON + g_code_shift) + 6;
+    h->fn.icon_draw = base + (LD_OFF_ICON_DRAW + g_code_shift);
+    h->fn.icon_resume = base + (LD_OFF_ICON_DRAW + g_code_shift) + 6;
+    h->fn.sel_resume = base + (LD_OFF_SELECTION_DRAW + g_code_shift) + 6;
+    h->fn.draw_ui_sprite = base + (LD_OFF_DRAW_UI_SPRITE + g_code_shift);
     h->fn.selection_menu = base + LD_OFF_SELECTION_MENU_PTR;
-    h->fn.hud_icon_ret = base + LD_OFF_HUD_ICON_RET;
+    h->fn.hud_icon_ret = base + (LD_OFF_HUD_ICON_RET + g_code_shift);
     h->fn.icon_holder = base + LD_OFF_ICON_HOLDER;
     h->fn.cam_world = base + LD_OFF_CAM_WORLD;
     /* Centered portrait picker. Normal and selected icons use a uniform
@@ -559,10 +595,10 @@ static intptr_t inject(pid_t pid, intptr_t base) {
         /* code patches while the game is stopped by ptrace, so no thread runs half-written code */
         if (install_render_hook(pid, base, mem + h->render_off)) LOG("render hook not installed (menu will be invisible)");
         if (install_dci_hook(pid, base, mem + h->dci_off)) LOG("icon capture hook not installed");
-        if (install_prologue_hook(pid, base, LD_OFF_ICON_DRAW, LD_OFF_TRAMPOLINE3, mem + h->icap_off))
+        if (install_prologue_hook(pid, base, (LD_OFF_ICON_DRAW + g_code_shift), LD_OFF_TRAMPOLINE3, mem + h->icap_off))
             LOG("full icon capture hook not installed");
         if (cfg.capture_selection) {
-            if (install_prologue_hook(pid, base, LD_OFF_SELECTION_DRAW,
+            if (install_prologue_hook(pid, base, (LD_OFF_SELECTION_DRAW + g_code_shift),
                                       LD_OFF_TRAMPOLINE4, mem + h->sel_off))
                 LOG("Characters selection diagnostic hook not installed");
             else LOG("Characters selection diagnostic capture enabled");
@@ -785,7 +821,7 @@ int main(void) {
             while (proc_alive(pid)) sleep(1);
             continue;
         }
-        if (mem) LOG("already injected at 0x%lx, monitoring", (long)mem);
+        if (mem) { detect_code_shift(pid, base); LOG("already injected at 0x%lx, monitoring", (long)mem); }
         else {
             uint64_t got = 0;
             intptr_t original = resolve(pid, LD_IMPORTS[H_GetDeviceList].lib,
@@ -798,7 +834,7 @@ int main(void) {
                 while (proc_alive(pid)) sleep(1);
                 continue;
             }
-            mem = inject(pid, base);
+            mem = detect_code_shift(pid, base) ? 0 : inject(pid, base);
         }
         if (!mem) {
             notify("LEGO Dimensions: failed to inject the Virtual Toy Pad (see %s)", LOG_FILE);
