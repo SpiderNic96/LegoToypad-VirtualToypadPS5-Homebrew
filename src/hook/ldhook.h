@@ -9,7 +9,7 @@
 #endif
 
 #define LDH_MAGIC   0x444D444Cu /* "LDMD" */
-#define LDH_VERSION 18
+#define LDH_VERSION 19
 #define LDH_PING    0x1D0CA7u
 
 /* Hooked imports, in this order (index into hook_off[] / orig[]) */
@@ -163,4 +163,13 @@ typedef struct {
         uint8_t item_data[96]; /* contents of item at time of draw */
     } sel[64];
     ld_bordercfg border;
+    /* command mailbox (v19): the injector fills op/a/b, then bumps req; the game handles it on
+     * its next pad read and sets done = req. Used by the PS5-hosted LegoToypad web remote. */
+    struct {
+        volatile uint32_t req, done;
+        volatile uint32_t op, a, b;
+        volatile int32_t result;
+    } mbox;
 } ld_header;
+
+enum { LD_MB_PLACE_ID = 1, LD_MB_REMOVE = 2, LD_MB_CLEAR_ALL = 3 };

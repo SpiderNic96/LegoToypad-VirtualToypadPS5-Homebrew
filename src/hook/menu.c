@@ -924,6 +924,33 @@ static void update_line(void) {
     if (changed) set_menu_line(buf);
 }
 
+/* ------------------------------------------------------------ web remote mailbox */
+
+/* Runs one pending request from the injector (see ld_header.mbox). Placement goes through place(),
+ * so web-loaded figures use and update the same tag library as the in-game menu (upgrades persist).
+ * The injector sequences remove-then-place and lift-then-place with real delays between requests,
+ * so the game always sees each change as its own event. */
+static void run_mailbox(void) {
+    uint32_t r = HDR.mbox.req;
+    if (r == HDR.mbox.done) return;
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    uint32_t op = HDR.mbox.op, a = HDR.mbox.a, b = HDR.mbox.b;
+    int32_t res = -1;
+    if (op == LD_MB_PLACE_ID && a < LD_MAX_SLOTS && b != 0 && !HDR.pad.fig[a].used) {
+        place((int)a, b);
+        res = HDR.pad.fig[a].used ? 0 : -1;
+    } else if (op == LD_MB_REMOVE && a < LD_MAX_SLOTS) {
+        ld_lock(); sync_library(); res = ld_remove(&HDR.pad, (int)a); HDR.state_seq++; ld_unlock();
+    } else if (op == LD_MB_CLEAR_ALL) {
+        ld_lock(); sync_library();
+        for (int i = 0; i < LD_MAX_SLOTS; i++) ld_remove(&HDR.pad, i);
+        HDR.state_seq++; ld_unlock();
+        res = 0;
+    }
+    HDR.mbox.result = res;
+    __atomic_store_n(&HDR.mbox.done, r, __ATOMIC_RELEASE);
+}
+
 /* ------------------------------------------------------------ per pad read */
 
 static void close_menu(void) {
@@ -932,6 +959,7 @@ static void close_menu(void) {
 }
 
 void menu_frame(int32_t handle, uint32_t *buttons, uint8_t *sticks) {
+    run_mailbox();
     uint32_t b = *buttons;
     uint32_t combo = HDR.opt_combo ? HDR.opt_combo : (B_L3 | B_R3);
     /* The left stick and D-pad share the menu navigation path. Read input

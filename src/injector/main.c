@@ -29,6 +29,7 @@
 #include "offsets.h"
 #include "pt.h"
 #include "blob.h"   /* LDHOOK_BIN / LDHOOK_BIN_len, generated from build/ldhook.bin */
+#include "webremote.h"
 
 #define DATA_DIR  "/data/ldmod"
 #define TAG_DIR   DATA_DIR "/tags"
@@ -60,6 +61,15 @@ static void logf_(const char *fmt, ...) {
     }
 }
 #define LOG(...) logf_(__VA_ARGS__)
+
+void web_log(const char *fmt, ...) {
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    logf_("%s", buf);
+}
 
 static void notify(const char *fmt, ...) {
     notify_request_t req;
@@ -735,11 +745,14 @@ static void monitor(pid_t pid, intptr_t mem, intptr_t base) {
         uint32_t sn = 0;
         kernel_proc_copyout(pid, mem + offsetof(ld_header, sniff_n), &sn, 4);
         if (sn != sniff_done) {
-            FILE *f = fopen(DATA_DIR "/usb_sniff.log", "a");
+            struct stat sst;
+            int big = !stat(DATA_DIR "/usb_sniff.log", &sst) && sst.st_size > 2 * 1024 * 1024;
+            FILE *f = fopen(DATA_DIR "/usb_sniff.log", big ? "w" : "a");
             if (sn - sniff_done > LD_SNIFF_MAX) { if (f) fprintf(f, "... %u entries lost\n", sn - sniff_done - LD_SNIFF_MAX); sniff_done = sn - LD_SNIFF_MAX; }
             for (; sniff_done != sn; sniff_done++) {
                 uint8_t e[36];
                 kernel_proc_copyout(pid, mem + offsetof(ld_header, sniff) + (sniff_done % LD_SNIFF_MAX) * 36, e, 36);
+                if (!e[0]) web_feed_out(e + 4, e[2] > 32 ? 32 : e[2]);
                 if (!f) continue;
                 fprintf(f, "%llu %s %s ", (unsigned long long)t, e[1] ? "REAL" : "VIRT", e[0] ? "IN " : "OUT");
                 for (int k = 0; k < e[2]; k++) fprintf(f, "%02x", e[4 + k]);
@@ -769,6 +782,7 @@ int main(void) {
         if (pf) { fprintf(pf, "%d\n", getpid()); fclose(pf); }
     }
     LOG("started (blob %u bytes)", (unsigned)LDHOOK_BIN_len);
+    web_start();
     notify("LEGO Dimensions: Virtual Toy Pad is active.\nStart the game.");
     for (;;) {
         char title[10];
@@ -841,7 +855,9 @@ int main(void) {
             while (proc_alive(pid)) sleep(1);
             continue;
         }
+        web_attach(pid, mem);
         monitor(pid, mem, base);
+        web_detach();
     }
     return 0;
 }

@@ -11,8 +11,8 @@ all: $(ELF)
 blob.h: $(BLOB)
 	cd ../../build && xxd -i -n LDHOOK_BIN ldhook.bin > ../src/injector/blob.h
 
-$(ELF): main.c pt.c ../core/ldproto.c blob.h offsets.h ../hook/ldhook.h
-	$(CC) $(CFLAGS) -o $@ main.c pt.c ../core/ldproto.c -lkernel_sys
+$(ELF): main.c pt.c webremote.c webremote.h ../core/ldproto.c blob.h offsets.h ../hook/ldhook.h
+	$(CC) $(CFLAGS) -o $@ main.c pt.c webremote.c ../core/ldproto.c -lkernel_sys -lpthread
 
 clean:
 	rm -f $(ELF) blob.h
