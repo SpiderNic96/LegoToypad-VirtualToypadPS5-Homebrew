@@ -704,7 +704,12 @@ def main(ltp: Path, web: Path):
     # Toypad skin
     save(render_tp_plate(badge), "tp_plate"); n += 1
     for r in range(3):
-        save(render_tp_region(r), "tp_r%d" % r); n += 1
+        piece = render_tp_region(r)
+        save(piece, "tp_r%d" % r); n += 1
+        # LED surface: the whole piece, solid, so a lit pad has no white trim left around it
+        m = Image.new("RGBA", piece.size, (255, 255, 255, 0))
+        m.putalpha(piece.split()[-1].point(lambda v: 255 if v > 40 else v * 255 // 40))
+        save(m, "tp_m%d" % r); n += 1
     # search screen
     save(render_key(False), "key"); n += 1
     save(render_key(True), "keysel"); n += 1

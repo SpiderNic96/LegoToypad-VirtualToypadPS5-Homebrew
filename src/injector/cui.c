@@ -290,14 +290,70 @@ static texent *tex_find(const char *name) {
     t->id = name_hash(name);
     t->dynamic = name[0] == 'p' && name[1] >= '0' && name[1] <= '9';      /* portraits */
     t->dynamic |= name[0] == 'w' && (name[1] == 'l' || (name[1] >= '0' && name[1] <= '9'));  /* worlds */
-    t->dynamic |= !strncmp(name, "wall", 4) || !strncmp(name, "pk", 2);  /* wallpapers, pad skins */
+    t->dynamic |= !strncmp(name, "wall", 4) || !strncmp(name, "pk", 2) || name[0] == '@';  /* wallpapers, skins, tints */
     return t;
 }
 
 typedef struct wstate wstate;
 static void tex_rebind(uint32_t id);
 
+/* "@<mask>#rrggbb": a white silhouette from the pack recoloured here, for renderers that cannot
+ * tint an image (no OVL_CAP_FILTER). Colours are quantised so LED fades reuse a few textures. */
+typedef struct { char name[24]; int w, h; uint8_t *a; } maskc;
+static maskc g_masks[12];
+
+static const maskc *mask_alpha(const char *name) {
+    for (int i = 0; i < 12; i++) if (g_masks[i].a && !strcmp(g_masks[i].name, name)) return &g_masks[i];
+    char path[160];
+    snprintf(path, sizeof path, UI_DIR "/%s.png", name);
+    size_t n = 0;
+    uint8_t *png = (uint8_t *)slurp(path, &n);
+    if (!png) return 0;
+    int w = 0, h = 0, comp = 0;
+    uint8_t *px = stbi_load_from_memory(png, (int)n, &w, &h, &comp, 4);
+    free(png);
+    if (!px) return 0;
+    int slot = 0;
+    for (int i = 0; i < 12; i++) if (!g_masks[i].a) { slot = i; break; }
+    maskc *m = &g_masks[slot];
+    free(m->a);
+    m->a = malloc((size_t)w * h);
+    if (!m->a) { stbi_image_free(px); return 0; }
+    for (int i = 0; i < w * h; i++) m->a[i] = px[i * 4 + 3];
+    stbi_image_free(px);
+    snprintf(m->name, sizeof m->name, "%s", name);
+    m->w = w; m->h = h;
+    return m;
+}
+
+static int tex_upload_tinted(texent *t) {
+    char base[24];
+    unsigned rgb = 0;
+    const char *hash = strchr(t->name, '#');
+    if (!hash || hash - t->name - 1 >= (long)sizeof base) { t->sent = -1; return -1; }
+    snprintf(base, sizeof base, "%.*s", (int)(hash - t->name - 1), t->name + 1);
+    rgb = (unsigned)strtoul(hash + 1, 0, 16);
+    const maskc *m = mask_alpha(base);
+    if (!m) { t->sent = -1; return -1; }
+    size_t n = (size_t)m->w * m->h;
+    uint8_t *px = malloc(n * 4);
+    if (!px) return -1;
+    for (size_t i = 0; i < n; i++) {
+        px[i * 4] = (uint8_t)(rgb >> 16); px[i * 4 + 1] = (uint8_t)(rgb >> 8); px[i * 4 + 2] = (uint8_t)rgb;
+        px[i * 4 + 3] = m->a[i];
+    }
+    uint8_t hdr[8];
+    uint16_t w16 = (uint16_t)m->w, h16 = (uint16_t)m->h;
+    memcpy(hdr, &t->id, 4); memcpy(hdr + 4, &w16, 2); memcpy(hdr + 6, &h16, 2);
+    int r = send_msg2(OVL_TEX, hdr, 8, px, (uint32_t)(n * 4));
+    free(px);
+    t->bytes = (int)(n * 4);
+    if (!r) { t->sent = 1; tex_rebind(t->id); }
+    return r;
+}
+
 static int tex_upload(texent *t) {
+    if (t->name[0] == '@') return tex_upload_tinted(t);
     char path[160];
     snprintf(path, sizeof path, UI_DIR "/%s.png", t->name);
     size_t n = 0;
@@ -470,6 +526,23 @@ static float img_fit(int id, const char *name, float bx, float by, float bw, flo
     float y = va == 0 ? by : va == 1 ? by + (bh - h) / 2 : by + bh - h;
     img(id, name, x, y, w, h, alpha, tint);
     return w;
+}
+
+/* a white silhouette in an LED / figure colour: tinted by the renderer when it can, otherwise a
+ * recoloured copy made here; 0 when neither works (the caller falls back to a flat panel) */
+static int tinted(int id, const char *mask, float x, float y, float w, float h, float alpha, const uint8_t rgb[3]) {
+    if (g_caps & OVL_CAP_FILTER) {
+        uint8_t tint[4] = {rgb[0], rgb[1], rgb[2], 255};
+        img(id, mask, x, y, w, h, alpha, tint);
+        return 1;
+    }
+    if (!(g_caps & OVL_CAP_PIXELS) || C.tex_mode == 2) return 0;
+    char name[24];
+    unsigned q[3];
+    for (int k = 0; k < 3; k++) q[k] = (unsigned)((rgb[k] * 5 + 127) / 255) * 51;
+    snprintf(name, sizeof name, "@%s#%02x%02x%02x", mask, q[0], q[1], q[2]);
+    img(id, name, x, y, w, h, alpha, 0);
+    return 1;
 }
 
 static void panel(int id, float x, float y, float w, float h, const uint8_t rgba[4]) {
@@ -1307,7 +1380,6 @@ static void draw_pads(const rectf cells[7], float u, int peek, float alpha, int 
     int mode[3]; uint8_t rgb[3][3]; float inten[3];
     vtp_leds(mode, rgb, inten);
     int mirror = vtp_led_mirror();
-    int filter = (g_caps & OVL_CAP_FILTER) != 0;
     int toypad = skin_is_toypad();
     char name[32];
     if (toypad && !peek) {
@@ -1316,12 +1388,11 @@ static void draw_pads(const rectf cells[7], float u, int peek, float alpha, int 
     }
     /* LED halos behind the pads (DrawLedRegionGlows) */
     for (int r = 0; r < 3; r++) {
-        if (!mirror || !mode[r] || inten[r] <= 0.004f || !filter) continue;
+        if (!mirror || !mode[r] || inten[r] <= 0.004f) continue;
         rectf bb = region_box(cells, r);
         float m = LED_M * u * (toypad && !peek ? TP_S : 1.0f);
         snprintf(name, sizeof name, peek ? "ledp%d" : "ledo%d", r);
-        uint8_t tint[4] = {rgb[r][0], rgb[r][1], rgb[r][2], 255};
-        img(W_HALO0 + r, name, bb.l - m, bb.t - m, bb.r - bb.l + 2 * m, bb.b - bb.t + 2 * m, inten[r] * alpha, tint);
+        tinted(W_HALO0 + r, name, bb.l - m, bb.t - m, bb.r - bb.l + 2 * m, bb.b - bb.t + 2 * m, inten[r] * alpha, rgb[r]);
     }
     /* Toypad skin: one white piece per LED region, lit as a whole like the real pad */
     if (toypad) {
@@ -1331,14 +1402,17 @@ static void draw_pads(const rectf cells[7], float u, int peek, float alpha, int 
                 float d = fminf(bb.r - bb.l, bb.b - bb.t), cx = (bb.l + bb.r) / 2, cy = (bb.t + bb.b) / 2;
                 bb = (rectf){cx - d / 2, cy - d / 2, cx + d / 2, cy + d / 2};
             }
+            int lit = mirror && mode[r] && (inten[r] > 0.004f || mode[r] == 2);
             snprintf(name, sizeof name, "tp_r%d", r);
-            img(W_TPREG0 + r, name, bb.l, bb.t, bb.r - bb.l, bb.b - bb.t, alpha, 0);
-            if (mirror && mode[r] && (inten[r] > 0.004f || mode[r] == 2)) {
+            /* a lit pad shows only the LED colour, like LegoToypad's peek: a dim LED is darker, not paler */
+            if (!lit) img(W_TPREG0 + r, name, bb.l, bb.t, bb.r - bb.l, bb.b - bb.t, alpha, 0);
+            if (lit) {
+                /* the LED fills the whole white piece, edge to edge (tp_m = the piece's silhouette) */
                 int dark = mode[r] == 2 && inten[r] <= 0.004f;
                 uint8_t tint[4] = {dark ? 0 : rgb[r][0], dark ? 0 : rgb[r][1], dark ? 0 : rgb[r][2], 255};
-                float a = dark ? 150.0f / 255.0f : 225.0f / 255.0f * inten[r];
-                if (filter) img(W_LEDT0 + r, name, bb.l, bb.t, bb.r - bb.l, bb.b - bb.t, a * alpha, tint);
-                else {
+                float a = dark ? 150.0f / 255.0f : 0.94f * inten[r];
+                snprintf(name, sizeof name, "tp_m%d", r);
+                if (!tinted(W_LEDT0 + r, name, bb.l, bb.t, bb.r - bb.l, bb.b - bb.t, a * alpha, tint)) {
                     uint8_t fill[4] = {tint[0], tint[1], tint[2], (uint8_t)(a * alpha * 255)};
                     for (int k = 0; k < 3; k++) {
                         int sl = LED_SLOTS[r][k];
@@ -1373,27 +1447,24 @@ static void draw_pads(const rectf cells[7], float u, int peek, float alpha, int 
                 img(W_BORD0 + i, name, c->l - m, c->t - m, cw + 2 * m, ch + 2 * m, alpha, 0);
             } else if (source) {
                 snprintf(name, sizeof name, "line%c", shape);
-                img(W_BORD0 + i, name, c->l - m, c->t - m, cw + 2 * m, ch + 2 * m, alpha, filter ? COL_MOVE : 0);
+                tinted(W_BORD0 + i, name, c->l - m, c->t - m, cw + 2 * m, ch + 2 * m, alpha, COL_MOVE);
             }
         } else {
             /* pad art (a lit region shows bare outlines so the LED colour reads true) */
             if (!lit) {
                 skin_pad_texture(i, name, sizeof name);
                 img(W_ART0 + i, name, c->l, c->t, cw, ch, alpha, 0);
-                if (S.used[i] && e >= 0 && filter) {
-                    uint8_t tint[4] = {E[e].rgb[0], E[e].rgb[1], E[e].rgb[2], 255};
+                if (S.used[i] && e >= 0) {
                     snprintf(name, sizeof name, "mask%c", shape);
-                    img(W_OCCT0 + i, name, c->l, c->t, cw, ch, alpha * 42.0f / 255.0f, tint);
+                    tinted(W_OCCT0 + i, name, c->l, c->t, cw, ch, alpha * 42.0f / 255.0f, E[e].rgb);
                 }
             } else if (inten[r] > 0.004f || mode[r] == 2) {
                 /* DrawLedRegionTint: colour at 210 * intensity, a flash's dark beat darkens the tile */
                 int dark = mode[r] == 2 && inten[r] <= 0.004f;
                 uint8_t tint[4] = {dark ? 0 : rgb[r][0], dark ? 0 : rgb[r][1], dark ? 0 : rgb[r][2], 255};
                 float a = dark ? 168.0f / 255.0f : 210.0f / 255.0f * inten[r];
-                if (filter) {
-                    snprintf(name, sizeof name, "mask%c", shape);
-                    img(W_LEDT0 + i, name, c->l, c->t, cw, ch, a * alpha, tint);
-                } else {
+                snprintf(name, sizeof name, "mask%c", shape);
+                if (!tinted(W_LEDT0 + i, name, c->l, c->t, cw, ch, a * alpha, tint)) {
                     uint8_t fill[4] = {tint[0], tint[1], tint[2], (uint8_t)(a * alpha * 255)};
                     panel(W_LEDP0 + i, c->l + 4 * u, c->t + 4 * u, cw - 8 * u, ch - 8 * u, fill);
                 }
@@ -1409,7 +1480,8 @@ static void draw_pads(const rectf cells[7], float u, int peek, float alpha, int 
                 else if (S.used[i] && e >= 0) { tint[0] = E[e].rgb[0]; tint[1] = E[e].rgb[1]; tint[2] = E[e].rgb[2]; tint[3] = 255; }
                 else memcpy(tint, COL_BORDER_IDLE, 4);
                 snprintf(name, sizeof name, "line%c", shape);
-                img(W_BORD0 + i, name, c->l - m, c->t - m, cw + 2 * m, ch + 2 * m, alpha, filter ? tint : 0);
+                if (!tinted(W_BORD0 + i, name, c->l - m, c->t - m, cw + 2 * m, ch + 2 * m, alpha, tint))
+                    img(W_BORD0 + i, name, c->l - m, c->t - m, cw + 2 * m, ch + 2 * m, alpha, 0);
             }
         }
         /* occupant portrait: 80% of the shorter side (DrawPadOccupant) */
