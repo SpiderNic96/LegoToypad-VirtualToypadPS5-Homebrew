@@ -275,7 +275,8 @@ bool tex_upload(std::uint32_t id, Tex& t, std::vector<std::uint8_t>& data, bool 
     /* file mode: write the PNG where SceShellUI can read it */
     if (!png || !ensure_temp_dir()) return false;
     char path[96];
-    std::snprintf(path, sizeof path, "%s/vtp%u.png", g_temp_dir, id);
+    const bool jpeg = data.size() > 2 && data[0] == 0xFF && data[1] == 0xD8;   /* wallpapers */
+    std::snprintf(path, sizeof path, "%s/vtp%u.%s", g_temp_dir, id, jpeg ? "jpg" : "png");
     FILE* f = std::fopen(path, "wb");
     if (!f) return false;
     bool ok = std::fwrite(data.data(), 1, data.size(), f) == data.size();

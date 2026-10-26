@@ -30,6 +30,7 @@
 #include "pt.h"
 #include "blob.h"   /* LDHOOK_BIN / LDHOOK_BIN_len, generated from build/ldhook.bin */
 #include "webremote.h"
+#include <pthread.h>
 #include "cui.h"
 #include "../overlay/controller/ovl_controller.h"
 
@@ -97,9 +98,11 @@ static struct {
     char combo_txt[64];
     uint32_t overlay, peek_size, fast_load, overlay_textures, peek;
     char peek_txt[64];
-} cfg = {250, 1, 0, 0, 0, 0, 1, 1080, 0x2 | 0x4, "L3+R3", 1, 2, 1, 0, 0x100, "L2"};
+    uint32_t background, opacity, pad_skin;
+} cfg = {250, 1, 0, 0, 0, 0, 1, 1080, 0x2 | 0x4, "L3+R3", 1, 2, 1, 0, 0x100, "L2", 0, 92, 0};
+static pthread_mutex_t cfg_mx = PTHREAD_MUTEX_INITIALIZER;   /* the overlay's Settings screen saves too */
 
-#define CONFIG_VERSION 3
+#define CONFIG_VERSION 4
 
 /* ScePad button names accepted in menu_buttons= */
 static const struct { const char *name; uint32_t bit; } BUTTONS[] = {
@@ -130,8 +133,9 @@ static uint32_t parse_combo(const char *txt) {
 }
 
 static void write_config(void) {
+    pthread_mutex_lock(&cfg_mx);
     FILE *f = fopen(DATA_DIR "/config.ini", "w");
-    if (!f) return;
+    if (!f) { pthread_mutex_unlock(&cfg_mx); return; }
     fprintf(f, "# LEGO Dimensions - Virtual Toy Pad\n"
                "config_version=%d\n\n"
                "# Buttons that open/close the in-game menu, joined with '+'.\n"
@@ -152,16 +156,35 @@ static void write_config(void) {
                "# Peek size: 0 off, 1 small, 2 medium, 3 large\npeek_size=%u\n"
                "# Close the picker after loading a figure (LegoToypad fast loading; 1/0)\nfast_load=%u\n"
                "# Overlay texture path: 0 auto, 1 pixel upload, 2 PNG files (try 2 if the art stays blank)\n"
-               "overlay_textures=%u\n",
+               "overlay_textures=%u\n"
+               "# Picker look (also changed from its Settings screen, Triangle on the pad screen):\n"
+               "# background 0 default wallpaper, 1 Clear (game shows through), 2..26 other wallpapers\n"
+               "overlay_background=%u\n"
+               "# Whole-picker opacity in percent, 20..100\noverlay_opacity=%u\n"
+               "# Pad art: 0 Default, 1 Old, 2 Plain\npad_skin=%u\n",
             CONFIG_VERSION, cfg.combo_txt, cfg.hold_ms, cfg.draw_text, cfg.notify_menu, cfg.force_fake,
             cfg.restore_pad, cfg.capture_selection, cfg.fps60, cfg.resolution, cfg.overlay, cfg.peek_txt,
-            cfg.peek_size, cfg.fast_load, cfg.overlay_textures);
+            cfg.peek_size, cfg.fast_load, cfg.overlay_textures, cfg.background, cfg.opacity, cfg.pad_skin);
     fclose(f);
+    pthread_mutex_unlock(&cfg_mx);
+}
+
+/* the console overlay's Settings screen changed something: keep it in config.ini */
+void cui_save_config(const cui_config *c) {
+    pthread_mutex_lock(&cfg_mx);
+    cfg.peek_size = (uint32_t)c->peek_size;
+    cfg.fast_load = (uint32_t)c->fast_load;
+    cfg.background = (uint32_t)c->background;
+    cfg.opacity = (uint32_t)c->opacity;
+    cfg.pad_skin = (uint32_t)c->pad_skin;
+    pthread_mutex_unlock(&cfg_mx);
+    write_config();
 }
 
 static void load_config(void) {
+    pthread_mutex_lock(&cfg_mx);
     FILE *f = fopen(DATA_DIR "/config.ini", "r");
-    if (!f) { write_config(); return; }
+    if (!f) { pthread_mutex_unlock(&cfg_mx); write_config(); return; }
     char line[256];
     unsigned ver = 0;
     while (fgets(line, sizeof line, f)) {
@@ -181,6 +204,9 @@ static void load_config(void) {
         else if (sscanf(line, "peek_size=%u", &v) == 1) cfg.peek_size = v > 3 ? 3 : v;
         else if (sscanf(line, "fast_load=%u", &v) == 1) cfg.fast_load = v;
         else if (sscanf(line, "overlay_textures=%u", &v) == 1) cfg.overlay_textures = v > 2 ? 0 : v;
+        else if (sscanf(line, "overlay_background=%u", &v) == 1) cfg.background = v > 64 ? 0 : v;
+        else if (sscanf(line, "overlay_opacity=%u", &v) == 1) cfg.opacity = v < 20 ? 20 : v > 100 ? 100 : v;
+        else if (sscanf(line, "pad_skin=%u", &v) == 1) cfg.pad_skin = v > 3 ? 0 : v;
         else if (sscanf(line, "peek_buttons=%63[^\r\n]", txt) == 1) {
             uint32_t m = parse_combo(txt);
             if (m) { cfg.peek = m; snprintf(cfg.peek_txt, sizeof cfg.peek_txt, "%s", txt); }
@@ -191,6 +217,7 @@ static void load_config(void) {
         }
     }
     fclose(f);
+    pthread_mutex_unlock(&cfg_mx);
     if (ver < CONFIG_VERSION) {
         if (ver < 2) {   /* old config (menu was on TRIANGLE) */
             cfg.hold_ms = 250;
@@ -814,7 +841,8 @@ int main(void) {
     LOG("started (blob %u bytes)", (unsigned)LDHOOK_BIN_len);
     web_start();
     {
-        cui_config cc = {(int)cfg.overlay, cfg.peek, (int)cfg.peek_size, (int)cfg.fast_load, (int)cfg.overlay_textures, cfg.combo};
+        cui_config cc = {(int)cfg.overlay, cfg.peek, (int)cfg.peek_size, (int)cfg.fast_load, (int)cfg.overlay_textures, cfg.combo,
+                         (int)cfg.background, (int)cfg.opacity, (int)cfg.pad_skin};
         cui_configure(&cc);
         ovl_ctl_enable((int)cfg.overlay);
         if (cfg.overlay) cui_start();

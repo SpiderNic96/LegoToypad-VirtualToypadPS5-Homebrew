@@ -443,12 +443,26 @@ def rounded_panel(art, w, h, radius):
     return im
 
 
+def render_settings_row(w=824, h=30):
+    """Settings focus row: rounded 8, vertical gradient (58,110,176) -> (32,74,130)."""
+    W, H = S(w), S(h)
+    m = Image.new("L", (W * SS, H * SS), 0)
+    ImageDraw.Draw(m).rounded_rectangle([0, 0, W * SS - 1, H * SS - 1], radius=8 * K * SS, fill=255)
+    m = m.resize((W, H), Image.LANCZOS)
+    t = np.linspace(0, 1, H, dtype=np.float32)[:, None]
+    rgb = np.zeros((H, W, 4), np.uint8)
+    for c, (a, b) in enumerate(((58, 32), (110, 74), (176, 130))):
+        rgb[..., c] = (a + (b - a) * t).astype(np.uint8)
+    rgb[..., 3] = np.asarray(m)
+    return Image.fromarray(rgb, "RGBA")
+
+
 # ---------------------------------------------------------------- main
 
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
 
-SOFT = ("ledo", "ledp", "glowsel", "glowmove", "tileglow", "btnhalo", "panel")
+SOFT = ("ledo", "ledp", "glowsel", "glowmove", "tileglow", "btnhalo", "panel", "spanel")
 
 
 def main(ltp: Path, web: Path):
@@ -467,11 +481,32 @@ def main(ltp: Path, web: Path):
         # every texture to its widget, and ShellUI's texture memory is small
         if name.startswith(SOFT):
             im = im.resize((max(1, im.width // 2), max(1, im.height // 2)), Image.LANCZOS)
+        if name.startswith("wall"):   # opaque photos: JPEG keeps the pack small
+            im.convert("RGB").save(out / (name + ".jpg"), quality=88, optimize=True)
+            return
         im.save(out / (name + ".png"), optimize=True)
     n = 0
 
-    # chrome
-    save(render_background(load(img(cat["background"]))), "bg"); n += 1
+    # chrome; wallpapers in LegoToypad's kBackgroundChoices order (wall0 = Default)
+    walls = sorted((A / "Wallpapers").glob("Background*.*"),
+                   key=lambda p: int(p.stem.split("_")[1]) if "_" in p.stem else 1)
+    if not walls:
+        save(render_background(load(img(cat["background"]))), "wall0"); n += 1
+    for wi, wp in enumerate(walls):
+        save(render_background(load(wp)), "wall%d" % wi); n += 1
+    # pad skins (kPadSkins: Default, Old, Plain); skin 0 keeps the plain pad%d names
+    PAD_FILES = ("left_upper", "Center", "right_upper", "left_lower_left", "left_lower_right",
+                 "right_lower_left", "right_lower_right")
+    skins = [d for d in ("default", "Old", "Plain") if (A / "Pads" / d).is_dir()]
+    for si, d in enumerate(skins[1:], 1):
+        for i, f in enumerate(PAD_FILES):
+            save(render_pad_art(load(A / "Pads" / d / (f + ".png")), i), "pk%d_%d" % (si, i)); n += 1
+    # Settings screen
+    st = A / "Tiles" / "Settings_tile.png"
+    save(rounded_panel(load(st if st.is_file() else img(cat["charactersTile"])), 840, 420, 14), "spanel"); n += 1
+    save(render_settings_row(), "srow"); n += 1
+    save(Image.new("RGBA", (8, 2), (255, 204, 51, 70)), "rule"); n += 1
+    save(fit(load(img(cat["settingsText"])), S(234), S(40)), "settext"); n += 1
     save(fit(load(img(cat["wordmark"])), S(460), S(90)), "wordmark"); n += 1
     save(fit(load(img(cat["byMark"])), S(400), S(30)), "bymark"); n += 1
     pads = [load(img(u)) for u in cat["pads"]]
@@ -556,6 +591,7 @@ def main(ltp: Path, web: Path):
                 portrait(b)
                 rows.append("V\t%d\t%d\t%d\t%d\t%s\t%s" % (wi, gi, b["build"], b["bin"], b["name"], b["color"]))
     (out / "catalog.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    (out / "skins.txt").write_text("\n".join(["Default"] + skins[1:]) + "\n", encoding="utf-8")
     size = sum(p.stat().st_size for p in out.iterdir())
     print("ui pack: %s  (%d textures, %d portraits, %.1f MB)" % (out, n, len(done), size / 1e6))
 

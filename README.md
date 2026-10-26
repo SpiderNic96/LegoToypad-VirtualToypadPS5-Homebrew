@@ -29,8 +29,12 @@ With `overlay=1` in `/data/ldmod/config.ini` (the default) and the `ui` art fold
 opens harrysof's LegoToypad picker over the game instead of the text menu:
 
 - **Pad screen:** D-pad/left stick picks a pad; **X** opens Load / Move / Clear; **Square** moves
-  the figure; **R1** goes straight to loading; **L1** clears; **Triangle** toggles the live toypad
-  LED colours; **Circle** closes.
+  the figure; **R1** goes straight to loading; **L1** clears; **Triangle** opens Settings;
+  **Circle** closes.
+- **Settings** (LegoToypad's list): background (26 wallpapers or **Clear**, so the game shows
+  through), pad skin (Default / Old / Plain), window transparency (20-100%), sneak peek size,
+  toypad LEDs, fast loading, the phone remote's address, clear all pads, reset to defaults.
+  Changes are saved to `config.ini`.
 - **Worlds / roster / builds:** **X** opens or loads, **Circle** goes back, **L1/R1** change the
   sort (Default, Year 1, Year 2, User, Favorites, Story), **Triangle** favourites a figure.
 - **Sneak peek:** hold **L2** during gameplay to see the pads, occupants and LEDs in the screen

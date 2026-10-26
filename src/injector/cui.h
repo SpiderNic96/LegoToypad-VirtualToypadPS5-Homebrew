@@ -10,7 +10,13 @@ typedef struct {
     int fast_load;        /* close the picker after a LOAD (LegoToypad "fast loading") */
     int tex_mode;         /* 0 auto, 1 pixel upload, 2 PNG files in /Temp */
     uint32_t combo;       /* menu_buttons: still held when the picker opens, not a press */
+    int background;       /* LegoToypad order: 0 default wallpaper, 1 Clear, 2.. wallpapers 2..26 */
+    int opacity;          /* whole-picker opacity percent, 20..100 (LegoToypad default 92) */
+    int pad_skin;         /* 0 Default, 1 Old, 2 Plain */
 } cui_config;
+
+/* implemented by the payload (main.c): persists settings changed on the TV Settings screen */
+void cui_save_config(const cui_config *c);
 
 void cui_configure(const cui_config *c);
 int cui_start(void);

@@ -39,6 +39,7 @@
 #endif
 
 #define STBI_ONLY_PNG
+#define STBI_ONLY_JPEG
 #define STBI_NO_STDIO
 #define STBI_NO_LINEAR
 #define STBI_NO_HDR
@@ -53,7 +54,7 @@ void web_log(const char *fmt, ...);
 #define UI_DIR "/data/ldmod/web/ui"
 #endif
 
-static cui_config C = {1, 0x100, 2, 1, 0, 0x2 | 0x4};
+static cui_config C = {1, 0x100, 2, 1, 0, 0x2 | 0x4, 0, 92, 0};
 
 void cui_configure(const cui_config *c) { C = *c; }
 
@@ -284,6 +285,7 @@ static texent *tex_find(const char *name) {
     t->id = name_hash(name);
     t->dynamic = name[0] == 'p' && name[1] >= '0' && name[1] <= '9';      /* portraits */
     t->dynamic |= name[0] == 'w' && (name[1] == 'l' || (name[1] >= '0' && name[1] <= '9'));  /* worlds */
+    t->dynamic |= !strncmp(name, "wall", 4) || !strncmp(name, "pk", 2);  /* wallpapers, pad skins */
     return t;
 }
 
@@ -295,6 +297,10 @@ static int tex_upload(texent *t) {
     snprintf(path, sizeof path, UI_DIR "/%s.png", t->name);
     size_t n = 0;
     uint8_t *png = (uint8_t *)slurp(path, &n);
+    if (!png) {   /* wallpapers ship as JPEG */
+        snprintf(path, sizeof path, UI_DIR "/%s.jpg", t->name);
+        png = (uint8_t *)slurp(path, &n);
+    }
     if (!png) { static int warned; if (warned++ < 8) LOGC("missing %s", path); t->sent = -1; return -1; }
     int r;
     if ((g_caps & OVL_CAP_PIXELS) && C.tex_mode != 2) {
@@ -309,9 +315,8 @@ static int tex_upload(texent *t) {
         stbi_image_free(px);
     } else {
         uint8_t hdr[8];
-        uint32_t w = 0, h = 0;
-        if (n > 24) { w = (uint32_t)png[16] << 24 | png[17] << 16 | png[18] << 8 | png[19];
-                      h = (uint32_t)png[20] << 24 | png[21] << 16 | png[22] << 8 | png[23]; }
+        int w = 0, h = 0, comp = 0;
+        stbi_info_from_memory(png, (int)n, &w, &h, &comp);
         uint16_t w16 = (uint16_t)w, h16 = (uint16_t)h;
         memcpy(hdr, &t->id, 4); memcpy(hdr + 4, &w16, 2); memcpy(hdr + 6, &h16, 2);
         r = send_msg2(OVL_TEXPNG, hdr, 8, png, (uint32_t)n);
@@ -331,12 +336,14 @@ static uint32_t tex(const char *name) {
     return t->sent == 1 ? t->id : t->id;   /* the renderer waits for late textures */
 }
 
-#define DYN_CAP 48   /* portraits + world art kept resident in ShellUI */
+#define DYN_CAP 48                  /* portraits, world art, wallpapers kept resident in ShellUI */
+#define DYN_BYTES (9 << 20)
 static void tex_evict(void) {
     int live = 0;
-    for (int i = 0; i < NT; i++) live += T[i].dynamic && T[i].sent == 1;
+    long bytes = 0;
+    for (int i = 0; i < NT; i++) if (T[i].dynamic && T[i].sent == 1) { live++; bytes += T[i].bytes; }
     uint64_t now = ms_now();
-    while (live > DYN_CAP) {
+    while (live > DYN_CAP || bytes > DYN_BYTES) {
         int lru = -1;
         for (int i = 0; i < NT; i++)
             if (T[i].dynamic && T[i].sent == 1 && now - T[i].used > 500 && (lru < 0 || T[i].used < T[lru].used)) lru = i;
@@ -345,6 +352,7 @@ static void tex_evict(void) {
         T[lru].sent = 0;
         tex_rebind(T[lru].id);
         live--;
+        bytes -= T[lru].bytes;
     }
 }
 
@@ -358,7 +366,9 @@ enum {
     W_SORT, W_TGLOW, W_TILE0, W_TBORD0 = W_TILE0 + 16, W_SCROLL = W_TBORD0 + 16,
     W_RPANEL, W_RLOGO, W_SEP, W_RPORT0, W_RFOCUS = W_RPORT0 + 15, W_RSTAR0, W_RNAME0 = W_RSTAR0 + 15,
     W_PPANEL = W_RNAME0 + 15, W_PPORT0, W_PFOCUS = W_PPORT0 + 8, W_PSTAR0, W_PNAME0 = W_PSTAR0 + 8,
-    W_TITLE = W_PNAME0 + 8,
+    W_SPANEL = W_PNAME0 + 8, W_SROW, W_SRULE0, W_SLAB0 = W_SRULE0 + 6, W_SVAL0 = W_SLAB0 + 12,
+    W_SETICON = W_SVAL0 + 12, W_SETTEXT,
+    W_TITLE,
     W_TL, W_TM, W_TR, W_TBL, W_TBM, W_TBR, W_TTEXT,
     W_HICON0, W_HTEXT0 = W_HICON0 + 7,
     W_COUNT = W_HTEXT0 + 7
@@ -391,6 +401,7 @@ static void define_types(void) {
     for (int i = 0; i < 15; i++) g_types[W_RNAME0 + i] = OVL_W_LABEL;
     for (int i = 0; i < 8; i++) g_types[W_PNAME0 + i] = OVL_W_LABEL;
     for (int i = 0; i < 7; i++) g_types[W_HTEXT0 + i] = OVL_W_LABEL;
+    for (int i = 0; i < 12; i++) g_types[W_SLAB0 + i] = g_types[W_SVAL0 + i] = OVL_W_LABEL;
 }
 
 static void reset_sent_state(void) {
@@ -523,7 +534,7 @@ static const uint8_t COL_HINT[4] = {196, 204, 216, 255};
 
 /* ------------------------------------------------------------------ UI state */
 
-enum { SCR_PAD, SCR_ACTION, SCR_FRANCHISE, SCR_ROSTER, SCR_PLUS };
+enum { SCR_PAD, SCR_ACTION, SCR_FRANCHISE, SCR_ROSTER, SCR_PLUS, SCR_SETTINGS };
 enum { SORT_DEFAULT = 0, SORT_USER = 1, SORT_STORY = 2, SORT_FAVORITES = 3, SORT_YEAR1 = 4, SORT_YEAR2 = 5 };
 static const int SORT_CYCLE[] = {SORT_DEFAULT, SORT_YEAR1, SORT_YEAR2, SORT_USER, SORT_FAVORITES, SORT_STORY};
 #define NSORT 6
@@ -542,6 +553,7 @@ static struct {
     int r_n, r_chars, r_index, r_top;
     int r_source;                          /* >= 0 world, -1 favorites, -2 story */
     int plus_group, plus_index, plus_back;
+    int set_index, set_top;                /* Settings: row in the full list (headings included) */
     char status[160];
     uint64_t status_t;
     int status_tone;                       /* 0 neutral, 1 removed, 2 moved */
@@ -570,7 +582,7 @@ static void set_status(int tone, const char *fmt, ...) {
 
 /* ------------------------------------------------------------------ actions (worker thread) */
 
-enum { ACT_NONE, ACT_LOAD, ACT_MOVE, ACT_CLEAR };
+enum { ACT_NONE, ACT_LOAD, ACT_MOVE, ACT_CLEAR, ACT_CLEARALL };
 static pthread_mutex_t g_act_mx = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_act_cv = PTHREAD_COND_INITIALIZER;
 static struct { int kind, a, b, busy; char result[160]; int result_rc, result_ready; } g_act;
@@ -585,6 +597,7 @@ static void *action_thread(void *arg) {
         char msg[160] = "";
         int rc = kind == ACT_LOAD ? vtp_load(a, b, msg, sizeof msg)
                : kind == ACT_MOVE ? vtp_move(a, b, msg, sizeof msg)
+               : kind == ACT_CLEARALL ? vtp_clearall(msg, sizeof msg)
                : vtp_clear(a, msg, sizeof msg);
         pthread_mutex_lock(&g_act_mx);
         snprintf(g_act.result, sizeof g_act.result, "%s", msg);
@@ -614,7 +627,7 @@ static void act_collect(void) {
     g_act.result_ready = 0;
     pthread_mutex_unlock(&g_act_mx);
     if (!kind) return;
-    set_status(rc ? 1 : kind == ACT_CLEAR ? 1 : kind == ACT_MOVE ? 2 : 0, "%s", msg);
+    set_status(rc ? 1 : (kind == ACT_CLEAR || kind == ACT_CLEARALL) ? 1 : kind == ACT_MOVE ? 2 : 0, "%s", msg);
 }
 
 /* ------------------------------------------------------------------ screens */
@@ -750,6 +763,8 @@ static void load_entry(int e) {
     }
 }
 
+static void settings_adjust(int dir, int allow_action);
+
 static void confirm(void) {
     switch (S.screen) {
     case SCR_PAD:
@@ -782,6 +797,9 @@ static void confirm(void) {
     case SCR_PLUS:
         load_entry(G[S.plus_group].first + S.plus_index);
         break;
+    case SCR_SETTINGS:
+        settings_adjust(1, 1);
+        break;
     }
 }
 
@@ -792,6 +810,7 @@ static void back(void) {
         else picker_close(1);
         break;
     case SCR_ACTION: S.screen = SCR_PAD; break;
+    case SCR_SETTINGS: S.screen = SCR_PAD; break;
     case SCR_FRANCHISE: S.screen = SCR_PAD; break;
     case SCR_ROSTER:
         if (S.r_source < 0 && (S.sort == SORT_FAVORITES || S.sort == SORT_STORY)) S.screen = SCR_PAD;
@@ -816,6 +835,164 @@ static void toggle_favorite(int e) {
     set_status(0, "%s %s", now ? "Favorited:" : "Unfavorited:", E[e].name);
 }
 
+/* ------------------------------------------------------------------ Settings */
+
+/* LegoToypad's Settings screen (BuildSettingsEntries / AdjustSettingsEntry), with the rows that
+ * mean something on a PS5: a categorised list, headings skipped by the focus, Left/Right walk a
+ * value, Cross also runs the one-shot actions. Changes are saved to config.ini at once. */
+enum { SA_HEADING, SA_BACKGROUND, SA_PADSKIN, SA_OPACITY, SA_PEEK, SA_LEDS, SA_FASTLOAD, SA_WEB,
+       SA_CLEARALL, SA_RESET };
+enum { TONE_NEUTRAL, TONE_ON, TONE_OFF };
+typedef struct { int action; const char *label; char value[64]; int tone; } srow_t;
+#define SET_MAX 16
+#define SET_VISIBLE 12
+#define SET_TOP 130
+#define SET_PITCH 32
+
+static int g_nwall = 1;                     /* bundled wallpapers (ui/wall*.jpg) */
+static int g_nskin = 1;
+static char g_skin[4][24] = {"Default"};
+static char g_web_url[48];
+
+static void probe_appearance(void) {
+    char path[160];
+    g_nwall = 0;
+    for (int i = 0; i < 64; i++) {
+        snprintf(path, sizeof path, UI_DIR "/wall%d.jpg", i);
+        if (access(path, F_OK)) break;
+        g_nwall = i + 1;
+    }
+    char *d = slurp(UI_DIR "/skins.txt", 0);
+    if (d) {
+        g_nskin = 0;
+        char *save = 0;
+        for (char *ln = strtok_r(d, "\r\n", &save); ln && g_nskin < 4; ln = strtok_r(0, "\r\n", &save))
+            snprintf(g_skin[g_nskin++], sizeof g_skin[0], "%s", ln);
+        free(d);
+        if (!g_nskin) { g_nskin = 1; snprintf(g_skin[0], sizeof g_skin[0], "Default"); }
+    }
+}
+
+static int bg_count(void) { return (g_nwall ? g_nwall : 1) + 1; }   /* wallpapers + Clear */
+static int bg_clear(void) { return C.background == 1; }
+/* texture for the current background (position 0 default, 1 Clear, 2.. wallpaper position-1) */
+static const char *bg_texture(char *buf, size_t n) {
+    if (!g_nwall) return "bg";
+    int wall = C.background < 1 ? 0 : C.background - 1;
+    if (wall >= g_nwall) wall = 0;
+    snprintf(buf, n, "wall%d", wall);
+    return buf;
+}
+
+static void web_url(void) {
+    if (g_web_url[0]) return;
+    snprintf(g_web_url, sizeof g_web_url, "port 8765");
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);   /* no packet is sent: this only picks the route */
+    if (fd < 0) return;
+    struct sockaddr_in a;
+    memset(&a, 0, sizeof a);
+    a.sin_family = AF_INET;
+    a.sin_port = htons(53);
+    a.sin_addr.s_addr = htonl(0x01010101);
+    socklen_t len = sizeof a;
+    if (!connect(fd, (struct sockaddr *)&a, sizeof a) && !getsockname(fd, (struct sockaddr *)&a, &len)) {
+        uint32_t ip = ntohl(a.sin_addr.s_addr);
+        if (ip) snprintf(g_web_url, sizeof g_web_url, "http://%u.%u.%u.%u:8765", ip >> 24, (ip >> 16) & 255,
+                         (ip >> 8) & 255, ip & 255);
+    }
+    close(fd);
+}
+
+static int build_settings(srow_t *r) {
+    int n = 0;
+#define HEAD(t) (r[n].action = SA_HEADING, r[n].label = (t), r[n].value[0] = 0, r[n].tone = 0, n++)
+#define ROW(a, t, tone_, ...) (r[n].action = (a), r[n].label = (t), r[n].tone = (tone_), \
+                               snprintf(r[n].value, sizeof r[n].value, __VA_ARGS__), n++)
+    static const char *peek[4] = {"Off", "Small", "Medium", "Large"};
+    HEAD("Appearance");
+    if (bg_clear()) ROW(SA_BACKGROUND, "Background", TONE_NEUTRAL, "Clear (see the game through it)");
+    else if (C.background <= 0) ROW(SA_BACKGROUND, "Background", TONE_NEUTRAL, "Default");
+    else ROW(SA_BACKGROUND, "Background", TONE_NEUTRAL, "Background %d", C.background);
+    ROW(SA_PADSKIN, "Pad skin", TONE_NEUTRAL, "%s (%d/%d)", g_skin[C.pad_skin < g_nskin ? C.pad_skin : 0],
+        (C.pad_skin < g_nskin ? C.pad_skin : 0) + 1, g_nskin);
+    ROW(SA_OPACITY, "Window transparency", TONE_NEUTRAL, "%d%% opaque%s", C.opacity, C.opacity >= 100 ? " (solid)" : "");
+    ROW(SA_PEEK, "Sneak peek", C.peek_size ? TONE_ON : TONE_OFF, "%s", peek[C.peek_size & 3]);
+    ROW(SA_LEDS, "Toypad LEDs", vtp_led_mirror() ? TONE_ON : TONE_OFF, "%s", vtp_led_mirror() ? "On" : "Off");
+    HEAD("Controls");
+    ROW(SA_FASTLOAD, "Fast loading", C.fast_load ? TONE_ON : TONE_OFF, "%s", C.fast_load ? "On" : "Off");
+    HEAD("System");
+    web_url();
+    ROW(SA_WEB, "Web remote", TONE_ON, "%s", g_web_url);
+    ROW(SA_CLEARALL, "Clear all pads", TONE_NEUTRAL, "%s", "");
+    ROW(SA_RESET, "Reset all settings to defaults", TONE_NEUTRAL, "%s", "");
+#undef HEAD
+#undef ROW
+    return n;
+}
+
+static void settings_scroll(int n) {
+    if (S.set_index - 1 < S.set_top) S.set_top = S.set_index - 1 < 0 ? 0 : S.set_index - 1;
+    while (S.set_index >= S.set_top + SET_VISIBLE) S.set_top++;
+    int max = n - SET_VISIBLE > 0 ? n - SET_VISIBLE : 0;
+    if (S.set_top > max) S.set_top = max;
+    if (S.set_top < 0) S.set_top = 0;
+}
+
+static void settings_open(void) {
+    srow_t r[SET_MAX];
+    int n = build_settings(r);
+    S.screen = SCR_SETTINGS;
+    if (S.set_index <= 0 || S.set_index >= n) S.set_index = 1;
+    while (S.set_index < n - 1 && r[S.set_index].action == SA_HEADING) S.set_index++;
+    settings_scroll(n);
+}
+
+static void settings_move(int dir) {
+    srow_t r[SET_MAX];
+    int n = build_settings(r);
+    for (int guard = 0; guard < n; guard++) {
+        S.set_index = (S.set_index + dir + n) % n;
+        if (r[S.set_index].action != SA_HEADING) break;
+    }
+    settings_scroll(n);
+}
+
+static void settings_save(void) {
+#ifndef CUI_HOST_TEST
+    cui_save_config(&C);
+#endif
+}
+
+static void settings_adjust(int dir, int allow_action) {
+    srow_t r[SET_MAX];
+    int n = build_settings(r);
+    if (S.set_index < 0 || S.set_index >= n) return;
+    int step = dir < 0 ? -1 : 1;
+    switch (r[S.set_index].action) {
+    case SA_BACKGROUND: { int c = bg_count(); C.background = ((C.background < 0 ? 0 : C.background) + step + c) % c; break; }
+    case SA_PADSKIN: C.pad_skin = (C.pad_skin + step + g_nskin) % g_nskin; break;
+    case SA_OPACITY:   /* +/-15 clamped, never wraps (CycleOpacity) */
+        C.opacity += step * 15;
+        if (C.opacity < 20) C.opacity = 20;
+        if (C.opacity > 100) C.opacity = 100;
+        break;
+    case SA_PEEK: C.peek_size = (C.peek_size + step + 4) % 4; break;
+    case SA_LEDS: vtp_led_mirror_set(!vtp_led_mirror()); return;   /* stored by the web remote */
+    case SA_FASTLOAD: C.fast_load = !C.fast_load; break;
+    case SA_CLEARALL:
+        if (allow_action && act_start(ACT_CLEARALL, 0, 0)) set_status(1, "Clearing all pads...");
+        return;
+    case SA_RESET:
+        if (!allow_action) return;
+        C.background = 0; C.opacity = 92; C.pad_skin = 0; C.peek_size = 2; C.fast_load = 1;
+        vtp_led_mirror_set(1);
+        set_status(0, "Settings reset to defaults.");
+        break;
+    default: return;
+    }
+    settings_save();
+}
+
 static void press(uint32_t p) {
     int dx = (p & B_RIGHT) ? 1 : (p & B_LEFT) ? -1 : 0, dy = (p & B_DOWN) ? 1 : (p & B_UP) ? -1 : 0;
     if (p & B_CROSS) { confirm(); return; }
@@ -831,10 +1008,11 @@ static void press(uint32_t p) {
             else { S.move_src = S.slot; S.moving = 1; set_status(0, "Move: pick a destination pad."); }
         } else if (!S.moving && (p & B_R1)) open_browse();
         else if (!S.moving && (p & B_L1)) { if (act_start(ACT_CLEAR, S.slot, 0)) set_status(1, "Clearing..."); }
-        else if (!S.moving && (p & B_TRIANGLE)) {
-            vtp_led_mirror_set(!vtp_led_mirror());
-            set_status(0, "Toypad LEDs: %s", vtp_led_mirror() ? "On" : "Off");
-        }
+        else if (!S.moving && (p & B_TRIANGLE)) settings_open();   /* LegoToypad: Y opens Settings */
+        break;
+    case SCR_SETTINGS:
+        if (dy) settings_move(dy);
+        else if (dx) settings_adjust(dx, 0);
         break;
     case SCR_ACTION:
         if (dx) S.action = (S.action + dx + 3) % 3;
@@ -933,7 +1111,7 @@ static void draw_pads(const rectf cells[7], float u, int peek, float alpha, int 
     for (int i = 0; i < 7; i++) {
         const rectf *c = &cells[i];
         float cw = c->r - c->l, ch = c->b - c->t;
-        char shape = PAD_SHAPE[i], name[16];
+        char shape = PAD_SHAPE[i], name[32];
         int r = LED_REGION[i];
         int lit = mirror && mode[r] != 0;
         int e = S.used[i] ? entry_by_bin(S.bin[i]) : -1;
@@ -947,7 +1125,8 @@ static void draw_pads(const rectf cells[7], float u, int peek, float alpha, int 
         }
         /* pad art (a lit region shows bare outlines so the LED colour reads true) */
         if (!lit) {
-            snprintf(name, sizeof name, "pad%d", i);
+            if (C.pad_skin > 0 && C.pad_skin < g_nskin) snprintf(name, sizeof name, "pk%d_%d", C.pad_skin, i);
+            else snprintf(name, sizeof name, "pad%d", i);
             img(W_ART0 + i, name, c->l, c->t, cw, ch, alpha, 0);
             if (S.used[i] && e >= 0 && filter) {
                 uint8_t tint[4] = {E[e].rgb[0], E[e].rgb[1], E[e].rgb[2], 255};
@@ -1037,9 +1216,10 @@ static void draw_hints(void) {
     case SCR_PAD:
         if (S.moving) { hint(&n, "A", "Drop here", &x); hint(&n, "B", "Cancel", &x); break; }
         hint(&n, "A", "Select", &x); hint(&n, "B", "Close", &x); hint(&n, "X", "Move", &x);
-        hint(&n, "RB", "Load", &x); hint(&n, "LB", "Clear", &x); hint(&n, "Y", "LEDs", &x);
-        hint(&n, "LT", "Peek (hold)", &x);
+        hint(&n, "RB", "Load", &x); hint(&n, "LB", "Clear", &x);
+        if (C.peek_size) hint(&n, "LT", "Peek (hold)", &x);
         break;
+    case SCR_SETTINGS: hint(&n, "A", "Change", &x); hint(&n, "B", "Back", &x); hint(&n, "DpadRight", "Adjust", &x); break;
     case SCR_ACTION: hint(&n, "A", "Choose", &x); hint(&n, "B", "Back", &x); break;
     case SCR_FRANCHISE: hint(&n, "A", "Open", &x); hint(&n, "B", "Back", &x); hint(&n, "LB", "Prev sort", &x); hint(&n, "RB", "Next sort", &x); break;
     case SCR_ROSTER:
@@ -1215,8 +1395,52 @@ static void draw_plus(void) {
     }
 }
 
+/* Settings list (Paint, Screen::Settings): one panel, heading rows centred in gold with a rule
+ * either side, the focused row on a blue gradient, values coloured by tone */
+static void draw_settings(void) {
+    srow_t r[SET_MAX];
+    int n = build_settings(r);
+    settings_scroll(n);
+    static const uint8_t gold[4] = {255, 204, 51, 255}, white[4] = {255, 255, 255, 255},
+                         text[4] = {228, 232, 238, 255}, tones[3][4] = {{255, 214, 140, 255}, {126, 226, 142, 255},
+                                                                        {255, 108, 108, 255}};
+    const float px = 30, pw = 840, pad = 18;
+    int vis = n - S.set_top < SET_VISIBLE ? n - S.set_top : SET_VISIBLE;
+    img(W_SPANEL, "spanel", X(px), Y(SET_TOP - pad), pw * K, (vis * SET_PITCH + 2 * pad) * K, 1.0f, 0);
+    const int font = 30;
+    int rules = 0;
+    for (int v = 0; v < vis && v < 12; v++) {
+        int i = S.set_top + v;
+        float y = SET_TOP + v * SET_PITCH, ty = Y(y) + (SET_PITCH * K - font) / 2 - 2;
+        if (r[i].action == SA_HEADING) {
+            label(W_SLAB0 + v, r[i].label, X(px), ty, pw * K, font, 1, 1, gold, 1.0f);
+            float half = strlen(r[i].label) * font * 0.58f / 2 / K + 14, centre = px + pw / 2, ry = y + SET_PITCH / 2.0f - 1;
+            if (rules < 6) img(W_SRULE0 + rules++, "rule", X(px + 22), Y(ry), (centre - half - px - 22) * K, 2 * K, 1.0f, 0);
+            if (rules < 6) img(W_SRULE0 + rules++, "rule", X(centre + half), Y(ry), (px + pw - 22 - centre - half) * K, 2 * K, 1.0f, 0);
+            continue;
+        }
+        int sel = i == S.set_index;
+        if (sel) img(W_SROW, "srow", X(px + 8), Y(y), (pw - 16) * K, (SET_PITCH - 2) * K, 1.0f, 0);
+        char lab[64];
+        snprintf(lab, sizeof lab, "%s%s", r[i].label, r[i].value[0] ? ":" : "");
+        label(W_SLAB0 + v, lab, X(px + 24), ty, (pw / 2 - 24) * K, font, 0, 1, sel ? white : text, 1.0f);
+        if (r[i].value[0])
+            label(W_SVAL0 + v, r[i].value, X(px + pw / 2), ty, (pw / 2 - 24) * K, font, 2, 1, tones[r[i].tone % 3], 1.0f);
+    }
+    if (n > SET_VISIBLE) draw_scrollbar(SET_TOP, SET_TOP + vis * SET_PITCH, n, SET_VISIBLE, S.set_top);
+}
+
+/* "[Y] settings" in the pad screen's bottom-right corner, as in LegoToypad */
+static void draw_settings_hint(void) {
+    const float icon = 44, th = 40, tw = 234.0f * th / 105.0f, gap = 8, cy = 610 - 18 - th / 2;
+    float x = 900 - 20 - (icon + gap + tw);
+    img(W_SETICON, "g_Y", X(x), Y(cy - icon / 2), icon * K, icon * K, 1.0f, 0);
+    img(W_SETTEXT, "settext", X(x + icon + gap), Y(cy - th / 2), tw * K, th * K, 1.0f, 0);
+}
+
 static void draw_overlay(void) {
-    img(W_BG, "bg", X(0), Y(0), 900 * K, 610 * K, 1.0f, 0);
+    char bgname[16];
+    if (!bg_clear()) img(W_BG, bg_texture(bgname, sizeof bgname), X(0), Y(0), 900 * K, 610 * K, 1.0f, 0);
     img(W_WORDMARK, "wordmark", X(20), Y(20 + (90 - 46) / 2.0f), 165 * K, 46 * K, 1.0f, 0);
     img(W_BYMARK, "bymark", X(900 - 20 - 128), Y(20 + 30), 128 * K, 30 * K, 1.0f, 0);
     switch (S.screen) {
@@ -1225,9 +1449,16 @@ static void draw_overlay(void) {
     case SCR_FRANCHISE: draw_franchise(); break;
     case SCR_ROSTER: draw_roster(); break;
     case SCR_PLUS: draw_plus(); break;
+    case SCR_SETTINGS: draw_settings(); break;
     }
+    if (S.screen == SCR_PAD && !S.moving) draw_settings_hint();
     draw_hints();
     draw_toast(1.0f);
+    /* Window transparency: the whole picker fades together (LegoToypad's layered-window alpha) */
+    if (C.opacity < 100) {
+        float o = (C.opacity < 20 ? 20 : C.opacity) / 100.0f;
+        for (int i = 0; i < W_COUNT; i++) if (g_cur[i].vis) g_cur[i].alpha *= o;
+    }
 }
 
 static float ease_out_cubic(float t) { t = clampf(t, 0, 1); return 1 - (1 - t) * (1 - t) * (1 - t); }
@@ -1278,6 +1509,7 @@ static void *cui_thread(void *arg) {
         if (!warned++) LOGC("no %s/catalog.tsv - copy the new web folder to use the console overlay", UI_DIR);
         sleep(5);
     }
+    probe_appearance();
     S.sort = vtp_sort_get();
     if (S.sort == 6) S.sort = SORT_DEFAULT;
     S.slot = 1;
