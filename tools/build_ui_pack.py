@@ -531,7 +531,7 @@ def render_tp_region(region):
         m = Image.new("L", c.size, 0)
         ImageDraw.Draw(m).ellipse([0, 0, c.width - 1, c.height - 1], fill=255)
         m = m.resize((S(W), S(H)), Image.LANCZOS)
-        g = np.asarray(_vgrad(S(W), S(H), (252, 252, 253), (222, 225, 229)), np.float32)
+        g = np.asarray(_vgrad(S(W), S(H), (246, 247, 249), (214, 218, 223)), np.float32)
         yy, xx = np.mgrid[0:S(H), 0:S(W)]
         rr = np.hypot(xx - S(W) / 2, yy - S(H) / 2) / (S(W) / 2)
         g[..., :3] *= (1.0 - 0.06 * np.clip(rr, 0, 1) ** 2)[..., None]
@@ -554,17 +554,70 @@ def render_tp_region(region):
     d.rectangle([ix, iy - rad, ix + rad, iy], fill=255)
     d.ellipse([ix, iy - 2 * rad, ix + 2 * rad, iy], fill=0)
     m = m.resize((S(W), S(H)), Image.LANCZOS)
-    im = _shape_fill(m, _vgrad(S(W), S(H), (251, 251, 252), (224, 227, 231)))
+    im = _shape_fill(m, _vgrad(S(W), S(H), (243, 244, 246), (214, 218, 223)))
     edge = np.asarray(m, np.float32) - np.asarray(m.filter(ImageFilter.MinFilter(5)), np.float32)
     over(im, solid((S(W), S(H)), (196, 200, 206), Image.fromarray(np.clip(edge, 0, 255).astype(np.uint8)), 210))
     # faint seams marking the three figure spots
-    sd = ImageDraw.Draw(im)
-    seam = (205, 209, 215, 170)
+    seams = Image.new("RGBA", im.size, (0, 0, 0, 0))
+    sd = ImageDraw.Draw(seams)
+    seam = (196, 200, 207, 170)
     yh = (PAD_CELLS[3][1] - 4 - t) * K
     sd.line([((PAD_CELLS[0][0] + 12 - l) * K, yh), ((PAD_CELLS[0][2] - 12 - l) * K, yh)], fill=seam, width=max(2, int(1.6 * K)))
     xv = (PAD_CELLS[3][2] + 4 - l) * K
     sd.line([(xv, (PAD_CELLS[3][1] + 12 - t) * K), (xv, (PAD_CELLS[3][3] - 12 - t) * K)], fill=seam, width=max(2, int(1.6 * K)))
+    im.alpha_composite(seams)
     return im if region == 0 else im.transpose(Image.FLIP_LEFT_RIGHT)
+
+
+# ---------------------------------------------------------------- realistic LED light (Toypad skin)
+# From the iFixit teardown: each side pad is a white L-shaped diffuser over an L-shaped LED board
+# with one RGB LED under each of its three figure spots; the centre is a clear "illumination
+# stand" over a single LED in the middle of the motherboard. Lit, a side pad glows all over with
+# a bright, near-white hot spot over each LED; the clear centre glows brightest in the middle and
+# along its rim. tp_lit* is the light's brightness across the piece (tinted with the LED colour),
+# tp_core* the hot spots (tinted with a whitened LED colour).
+TP_SPOTS_LEFT = [((PAD_CELLS[s][0] + PAD_CELLS[s][2]) / 2, (PAD_CELLS[s][1] + PAD_CELLS[s][3]) / 2) for s in (0, 3, 4)]
+
+
+def _gauss(W, H, pts, sigma):
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    g = np.zeros((H, W), np.float32)
+    for (x, y) in pts:
+        g = np.maximum(g, np.exp(-((xx - x) ** 2 + (yy - y) ** 2) / (2 * sigma * sigma)))
+    return g
+
+
+def render_tp_light(region, core):
+    piece = render_tp_region(1 if region == 1 else 0)   # the right side is the left one mirrored
+    W, H = piece.size
+    alpha = np.asarray(piece.split()[-1], np.float32) / 255.0
+    if region == 1:
+        r = W / 2
+        yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+        d = np.hypot(xx - r, yy - r) / r
+        if core:
+            a = np.exp(-(d / 0.16) ** 2) + 0.35 * np.exp(-((d - 0.9) / 0.05) ** 2)
+            lum = np.ones_like(d)
+        else:
+            lum = 0.55 + 0.45 * np.exp(-(d / 0.35) ** 2) + 0.35 * np.exp(-((d - 0.88) / 0.08) ** 2)
+            a = alpha
+    else:
+        l, t, _, _ = TP_REGION_BOX[0]
+        pts = [((x - l) * K, (y - t) * K) for (x, y) in TP_SPOTS_LEFT]
+        if core:
+            a = np.clip(1.5 * _gauss(W, H, pts, 14 * K), 0, 1) * alpha
+            lum = np.ones_like(a)
+        else:
+            glow = _gauss(W, H, pts, 30 * K)
+            edge = np.asarray(Image.fromarray((alpha * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(10 * K)), np.float32) / 255
+            lum = (0.74 + 0.26 * glow) * (0.82 + 0.18 * edge)
+            a = alpha
+    v = np.clip(lum, 0, 1) * 255
+    rgba = np.dstack([v, v, v, np.clip(a, 0, 1) * 255]).astype(np.uint8)
+    im = Image.fromarray(rgba, "RGBA")
+    if region == 2:
+        im = im.transpose(Image.FLIP_LEFT_RIGHT)
+    return im
 
 
 def render_tp_plate(badge):
@@ -710,6 +763,8 @@ def main(ltp: Path, web: Path):
         m = Image.new("RGBA", piece.size, (255, 255, 255, 0))
         m.putalpha(piece.split()[-1].point(lambda v: 255 if v > 40 else v * 255 // 40))
         save(m, "tp_m%d" % r); n += 1
+        save(render_tp_light(r, False), "tp_lit%d" % r); n += 1
+        save(render_tp_light(r, True), "tp_core%d" % r); n += 1
     # search screen
     save(render_key(False), "key"); n += 1
     save(render_key(True), "keysel"); n += 1

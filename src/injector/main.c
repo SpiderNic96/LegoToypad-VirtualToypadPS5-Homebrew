@@ -98,11 +98,11 @@ static struct {
     char combo_txt[64];
     uint32_t overlay, peek_size, fast_load, overlay_textures, peek;
     char peek_txt[64];
-    uint32_t background, opacity, pad_skin, ui_size, text_size;
-} cfg = {250, 1, 0, 0, 0, 0, 1, 1080, 0x2 | 0x4, "L3+R3", 1, 2, 1, 0, 0x100, "L2", 0, 92, 0, 0, 0};
+    uint32_t background, opacity, pad_skin, ui_size, text_size, led_style;
+} cfg = {250, 1, 0, 0, 0, 0, 1, 1080, 0x2 | 0x4, "L3+R3", 1, 2, 1, 0, 0x100, "L2", 0, 92, 0, 0, 0, 0};
 static pthread_mutex_t cfg_mx = PTHREAD_MUTEX_INITIALIZER;   /* the overlay's Settings screen saves too */
 
-#define CONFIG_VERSION 5
+#define CONFIG_VERSION 6
 
 /* ScePad button names accepted in menu_buttons= */
 static const struct { const char *name; uint32_t bit; } BUTTONS[] = {
@@ -163,10 +163,11 @@ static void write_config(void) {
                "# Whole-picker opacity in percent, 20..100\noverlay_opacity=%u\n"
                "# Pad art: 0 Toypad (a real toypad), 1 Default, 2 Old, 3 Plain\npad_skin=%u\n"
                "# UI size: 0 Auto (110%%), 1 90%%, 2 100%%, 3 110%%, 4 118%%\nui_size=%u\n"
-               "# Text size: 0 Auto (125%%), 1 100%%, 2 115%%, 3 130%%, 4 150%%\ntext_size=%u\n",
+               "# Text size: 0 Auto (125%%), 1 100%%, 2 115%%, 3 130%%, 4 150%%\ntext_size=%u\n"
+               "# Toypad skin LEDs: 0 Realistic (diffused light, hot spots), 1 Flat\nled_style=%u\n",
             CONFIG_VERSION, cfg.combo_txt, cfg.hold_ms, cfg.draw_text, cfg.notify_menu, cfg.force_fake,
             cfg.restore_pad, cfg.capture_selection, cfg.fps60, cfg.resolution, cfg.overlay, cfg.peek_txt,
-            cfg.peek_size, cfg.fast_load, cfg.overlay_textures, cfg.background, cfg.opacity, cfg.pad_skin, cfg.ui_size, cfg.text_size);
+            cfg.peek_size, cfg.fast_load, cfg.overlay_textures, cfg.background, cfg.opacity, cfg.pad_skin, cfg.ui_size, cfg.text_size, cfg.led_style);
     fclose(f);
     pthread_mutex_unlock(&cfg_mx);
 }
@@ -181,6 +182,7 @@ void cui_save_config(const cui_config *c) {
     cfg.pad_skin = (uint32_t)c->pad_skin;
     cfg.ui_size = (uint32_t)c->ui_size;
     cfg.text_size = (uint32_t)c->text_size;
+    cfg.led_style = (uint32_t)c->led_style;
     pthread_mutex_unlock(&cfg_mx);
     write_config();
 }
@@ -213,6 +215,7 @@ static void load_config(void) {
         else if (sscanf(line, "pad_skin=%u", &v) == 1) cfg.pad_skin = v > 7 ? 0 : v;
         else if (sscanf(line, "ui_size=%u", &v) == 1) cfg.ui_size = v > 4 ? 0 : v;
         else if (sscanf(line, "text_size=%u", &v) == 1) cfg.text_size = v > 4 ? 0 : v;
+        else if (sscanf(line, "led_style=%u", &v) == 1) cfg.led_style = v > 1 ? 0 : v;
         else if (sscanf(line, "peek_buttons=%63[^\r\n]", txt) == 1) {
             uint32_t m = parse_combo(txt);
             if (m) { cfg.peek = m; snprintf(cfg.peek_txt, sizeof cfg.peek_txt, "%s", txt); }
@@ -852,7 +855,7 @@ int main(void) {
     {
         cui_config cc = {(int)cfg.overlay, cfg.peek, (int)cfg.peek_size, (int)cfg.fast_load, (int)cfg.overlay_textures, cfg.combo,
                          (int)cfg.background, (int)cfg.opacity, (int)cfg.pad_skin, (int)cfg.ui_size,
-                         (int)cfg.text_size};
+                         (int)cfg.text_size, (int)cfg.led_style};
         cui_configure(&cc);
         ovl_ctl_enable((int)cfg.overlay);
         if (cfg.overlay) cui_start();

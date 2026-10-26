@@ -15,6 +15,7 @@ typedef struct {
     int pad_skin;         /* 0 Toypad (a real toypad), 1 Default, 2 Old, 3 Plain (LegoToypad's) */
     int ui_size;          /* 0 Auto (110%), 1 90%, 2 100%, 3 110%, 4 118% */
     int text_size;        /* 0 Auto (125%), 1 100%, 2 115%, 3 130%, 4 150% */
+    int led_style;        /* Toypad skin LEDs: 0 Realistic (diffused light, hot spots), 1 Flat */
 } cui_config;
 
 /* implemented by the payload (main.c): persists settings changed on the TV Settings screen */

@@ -54,7 +54,7 @@ void web_log(const char *fmt, ...);
 #define UI_DIR "/data/ldmod/web/ui"
 #endif
 
-static cui_config C = {1, 0x100, 2, 1, 0, 0x2 | 0x4, 0, 92, 0, 0, 0};
+static cui_config C = {1, 0x100, 2, 1, 0, 0x2 | 0x4, 0, 92, 0, 0, 0, 0};
 
 void cui_configure(const cui_config *c) { C = *c; }
 
@@ -299,7 +299,7 @@ static void tex_rebind(uint32_t id);
 
 /* "@<mask>#rrggbb": a white silhouette from the pack recoloured here, for renderers that cannot
  * tint an image (no OVL_CAP_FILTER). Colours are quantised so LED fades reuse a few textures. */
-typedef struct { char name[24]; int w, h; uint8_t *a; } maskc;
+typedef struct { char name[24]; int w, h; uint8_t *a; } maskc;   /* a = RGBA of the white artwork */
 static maskc g_masks[12];
 
 static const maskc *mask_alpha(const char *name) {
@@ -317,10 +317,7 @@ static const maskc *mask_alpha(const char *name) {
     for (int i = 0; i < 12; i++) if (!g_masks[i].a) { slot = i; break; }
     maskc *m = &g_masks[slot];
     free(m->a);
-    m->a = malloc((size_t)w * h);
-    if (!m->a) { stbi_image_free(px); return 0; }
-    for (int i = 0; i < w * h; i++) m->a[i] = px[i * 4 + 3];
-    stbi_image_free(px);
+    m->a = px;   /* stbi_image_free is free() here */
     snprintf(m->name, sizeof m->name, "%s", name);
     m->w = w; m->h = h;
     return m;
@@ -338,9 +335,10 @@ static int tex_upload_tinted(texent *t) {
     size_t n = (size_t)m->w * m->h;
     uint8_t *px = malloc(n * 4);
     if (!px) return -1;
-    for (size_t i = 0; i < n; i++) {
-        px[i * 4] = (uint8_t)(rgb >> 16); px[i * 4 + 1] = (uint8_t)(rgb >> 8); px[i * 4 + 2] = (uint8_t)rgb;
-        px[i * 4 + 3] = m->a[i];
+    unsigned cr = (rgb >> 16) & 255, cg = (rgb >> 8) & 255, cb = rgb & 255;
+    for (size_t i = 0; i < n; i++) {   /* multiply, like the renderer's FilterColor */
+        px[i * 4] = (uint8_t)(m->a[i * 4] * cr / 255); px[i * 4 + 1] = (uint8_t)(m->a[i * 4 + 1] * cg / 255);
+        px[i * 4 + 2] = (uint8_t)(m->a[i * 4 + 2] * cb / 255); px[i * 4 + 3] = m->a[i * 4 + 3];
     }
     uint8_t hdr[8];
     uint16_t w16 = (uint16_t)m->w, h16 = (uint16_t)m->h;
@@ -452,7 +450,7 @@ static float tex_aspect(const char *name, float fallback) {
 enum {
     W_BG, W_WORDMARK, W_BYMARK, W_PORTMARK, W_PLATE,
     W_HALO0, W_GLOW0 = W_HALO0 + 3, W_TPREG0 = W_GLOW0 + 7, W_ART0 = W_TPREG0 + 3, W_OCCT0 = W_ART0 + 7, W_LEDT0 = W_OCCT0 + 7,
-    W_LEDP0 = W_LEDT0 + 7, W_BORD0 = W_LEDP0 + 7, W_OCC0 = W_BORD0 + 7, W_ACTHALO = W_OCC0 + 7,
+    W_LEDP0 = W_LEDT0 + 7, W_TPCORE0 = W_LEDP0 + 7, W_BORD0 = W_TPCORE0 + 3, W_OCC0 = W_BORD0 + 7, W_ACTHALO = W_OCC0 + 7,
     W_ACT0, W_OCCNAME = W_ACT0 + 3,
     W_SORT, W_TGLOW, W_TILE0, W_TBORD0 = W_TILE0 + 16, W_SCROLL = W_TBORD0 + 16,
     W_RPANEL, W_RLOGO, W_SEP, W_RPORT0, W_RFOCUS = W_RPORT0 + 15, W_RSTAR0, W_RNAME0 = W_RSTAR0 + 15,
@@ -969,11 +967,11 @@ static void toggle_favorite(int e) {
 /* LegoToypad's Settings screen (BuildSettingsEntries / AdjustSettingsEntry), with the rows that
  * mean something on a PS5: a categorised list, headings skipped by the focus, Left/Right walk a
  * value, Cross also runs the one-shot actions. Changes are saved to config.ini at once. */
-enum { SA_HEADING, SA_BACKGROUND, SA_PADSKIN, SA_OPACITY, SA_UISIZE, SA_TEXTSIZE, SA_PEEK, SA_LEDS,
+enum { SA_HEADING, SA_BACKGROUND, SA_PADSKIN, SA_LEDSTYLE, SA_OPACITY, SA_UISIZE, SA_TEXTSIZE, SA_PEEK, SA_LEDS,
        SA_FASTLOAD, SA_WEB, SA_CLEARALL, SA_RESET };
 enum { TONE_NEUTRAL, TONE_ON, TONE_OFF };
 typedef struct { int action; const char *label; char value[64]; int tone; } srow_t;
-#define SET_MAX 18
+#define SET_MAX 20
 #define SET_VISIBLE 12
 #define SET_TOP 130
 #define SET_PITCH 32
@@ -1065,6 +1063,7 @@ static int build_settings(srow_t *r) {
     else if (C.background <= 0) ROW(SA_BACKGROUND, "Background", TONE_NEUTRAL, "Default");
     else ROW(SA_BACKGROUND, "Background", TONE_NEUTRAL, "Background %d", C.background);
     ROW(SA_PADSKIN, "Pad skin", TONE_NEUTRAL, "%s (%d/%d)", g_skin[skin_index()], skin_index() + 1, g_nskin);
+    if (skin_is_toypad()) ROW(SA_LEDSTYLE, "LED look", TONE_NEUTRAL, "%s", C.led_style ? "Flat (LegoToypad)" : "Realistic");
     ROW(SA_OPACITY, "Window transparency", TONE_NEUTRAL, "%d%% opaque%s", C.opacity, C.opacity >= 100 ? " (solid)" : "");
     {
         int u = (unsigned)C.ui_size < 5 ? C.ui_size : 0, t = (unsigned)C.text_size < 5 ? C.text_size : 0;
@@ -1126,6 +1125,7 @@ static void settings_adjust(int dir, int allow_action) {
     switch (r[S.set_index].action) {
     case SA_BACKGROUND: { int c = bg_count(); C.background = ((C.background < 0 ? 0 : C.background) + step + c) % c; break; }
     case SA_PADSKIN: C.pad_skin = (skin_index() + step + g_nskin) % g_nskin; break;
+    case SA_LEDSTYLE: C.led_style = !C.led_style; break;
     case SA_UISIZE: C.ui_size = (((unsigned)C.ui_size < 5 ? C.ui_size : 0) + step + 5) % 5; break;
     case SA_TEXTSIZE: C.text_size = (((unsigned)C.text_size < 5 ? C.text_size : 0) + step + 5) % 5; break;
     case SA_OPACITY:   /* +/-15 clamped, never wraps (CycleOpacity) */
@@ -1142,7 +1142,7 @@ static void settings_adjust(int dir, int allow_action) {
     case SA_RESET:
         if (!allow_action) return;
         C.background = 0; C.opacity = 92; C.pad_skin = 0; C.peek_size = 2; C.fast_load = 1;
-        C.ui_size = 0; C.text_size = 0;
+        C.ui_size = 0; C.text_size = 0; C.led_style = 0;
         vtp_led_mirror_set(1);
         set_status(0, "Settings reset to defaults.");
         break;
@@ -1350,7 +1350,33 @@ static void portrait_focus(int id, int e, float cx, float cy, float d) {
     img(id, "pfocus", cx - w / 2, cy - w / 2, w, w, 1.0f, tint);
 }
 
-/* pads + LEDs + occupants; cells in canvas pixels, `u` = canvas px per window unit */
+/* What an LED region looks like to the eye. The wire carries linear LED drive (calibrated to
+ * the pad's white point by vtp_leds) and intensity; light that adds up linearly is shown on an
+ * sRGB screen through the sRGB transfer curve, so dim light stays visible and mixed colours stay
+ * clean instead of greying out. c = the light's hue at full brightness, b = its perceived
+ * brightness 0..1, core = the whitened colour of the hot spots above the LEDs. */
+typedef struct { int lit; float b; uint8_t c[3], core[3]; } ledlook;
+static float srgb_encode(float l) {
+    l = clampf(l, 0, 1);
+    return l <= 0.0031308f ? 12.92f * l : 1.055f * powf(l, 1.0f / 2.4f) - 0.055f;
+}
+static ledlook led_look(int mode, const uint8_t rgb[3], float intensity) {
+    ledlook o;
+    memset(&o, 0, sizeof o);
+    if (!mode) return o;
+    float e[3], b = 0;
+    for (int k = 0; k < 3; k++) { e[k] = srgb_encode(rgb[k] / 255.0f * intensity); b = fmaxf(b, e[k]); }
+    if (b < 0.004f) return o;
+    o.lit = 1;
+    o.b = b;
+    for (int k = 0; k < 3; k++) {
+        float c = e[k] / b;
+        o.c[k] = (uint8_t)(c * 255 + 0.5f);
+        o.core[k] = (uint8_t)((c + (1 - c) * 0.65f) * 255 + 0.5f);
+    }
+    return o;
+}
+
 /* "Toypad" skin: the real toypad is drawn a little smaller (TP_S) and lower (TP_DY) than
  * LegoToypad's pad grid so its base plate clears the wordmark band. Window units. */
 #define TP_S 0.86f
@@ -1387,12 +1413,19 @@ static void draw_pads(const rectf cells[7], float u, int peek, float alpha, int 
         img(W_PLATE, "tp_plate", X(p.l), Y(p.t), (p.r - p.l) * K, (p.b - p.t) * K, alpha, 0);
     }
     /* LED halos behind the pads (DrawLedRegionGlows) */
+    int realistic = toypad && C.led_style == 0;
+    ledlook look[3];
+    for (int r = 0; r < 3; r++) look[r] = led_look(mirror ? mode[r] : 0, rgb[r], inten[r]);
     for (int r = 0; r < 3; r++) {
         if (!mirror || !mode[r] || inten[r] <= 0.004f) continue;
         rectf bb = region_box(cells, r);
         float m = LED_M * u * (toypad && !peek ? TP_S : 1.0f);
         snprintf(name, sizeof name, peek ? "ledp%d" : "ledo%d", r);
-        tinted(W_HALO0 + r, name, bb.l - m, bb.t - m, bb.r - bb.l + 2 * m, bb.b - bb.t + 2 * m, inten[r] * alpha, rgb[r]);
+        if (realistic) {   /* the spill onto the plate follows the light's perceived brightness */
+            if (look[r].lit)
+                tinted(W_HALO0 + r, name, bb.l - m, bb.t - m, bb.r - bb.l + 2 * m, bb.b - bb.t + 2 * m, look[r].b * alpha, look[r].c);
+        } else
+            tinted(W_HALO0 + r, name, bb.l - m, bb.t - m, bb.r - bb.l + 2 * m, bb.b - bb.t + 2 * m, inten[r] * alpha, rgb[r]);
     }
     /* Toypad skin: one white piece per LED region, lit as a whole like the real pad */
     if (toypad) {
@@ -1402,23 +1435,44 @@ static void draw_pads(const rectf cells[7], float u, int peek, float alpha, int 
                 float d = fminf(bb.r - bb.l, bb.b - bb.t), cx = (bb.l + bb.r) / 2, cy = (bb.t + bb.b) / 2;
                 bb = (rectf){cx - d / 2, cy - d / 2, cx + d / 2, cy + d / 2};
             }
+            float bw = bb.r - bb.l, bh = bb.b - bb.t;
+            if (realistic) {
+                /* light added to frosted plastic: the piece stays, the LED light goes over it with a
+                 * near-white hot spot above each LED; LED off (a flash's dark beat) = plain plastic */
+                snprintf(name, sizeof name, "tp_r%d", r);
+                img(W_TPREG0 + r, name, bb.l, bb.t, bw, bh, alpha, 0);
+                if (!look[r].lit) continue;
+                snprintf(name, sizeof name, "tp_lit%d", r);
+                if (!tinted(W_LEDT0 + r, name, bb.l, bb.t, bw, bh, fminf(1.0f, look[r].b * 1.08f) * alpha, look[r].c)) {
+                    uint8_t fill[4] = {look[r].c[0], look[r].c[1], look[r].c[2], (uint8_t)(fminf(1.0f, look[r].b) * alpha * 255)};
+                    for (int k = 0; k < 3; k++) {
+                        int sl = LED_SLOTS[r][k];
+                        if (sl < 0) continue;
+                        const rectf *c = &cells[sl];
+                        panel(W_LEDP0 + sl, c->l, c->t, c->r - c->l, c->b - c->t, fill);
+                    }
+                    continue;
+                }
+                snprintf(name, sizeof name, "tp_core%d", r);
+                tinted(W_TPCORE0 + r, name, bb.l, bb.t, bw, bh, powf(look[r].b, 1.6f) * 0.85f * alpha, look[r].core);
+                continue;
+            }
             int lit = mirror && mode[r] && (inten[r] > 0.004f || mode[r] == 2);
             snprintf(name, sizeof name, "tp_r%d", r);
-            /* a lit pad shows only the LED colour, like LegoToypad's peek: a dim LED is darker, not paler */
-            if (!lit) img(W_TPREG0 + r, name, bb.l, bb.t, bb.r - bb.l, bb.b - bb.t, alpha, 0);
+            /* flat (LegoToypad) look: a lit pad shows only the LED colour; a dim LED is darker */
+            if (!lit) img(W_TPREG0 + r, name, bb.l, bb.t, bw, bh, alpha, 0);
             if (lit) {
-                /* the LED fills the whole white piece, edge to edge (tp_m = the piece's silhouette) */
                 int dark = mode[r] == 2 && inten[r] <= 0.004f;
                 uint8_t tint[4] = {dark ? 0 : rgb[r][0], dark ? 0 : rgb[r][1], dark ? 0 : rgb[r][2], 255};
                 float a = dark ? 150.0f / 255.0f : 0.94f * inten[r];
                 snprintf(name, sizeof name, "tp_m%d", r);
-                if (!tinted(W_LEDT0 + r, name, bb.l, bb.t, bb.r - bb.l, bb.b - bb.t, a * alpha, tint)) {
+                if (!tinted(W_LEDT0 + r, name, bb.l, bb.t, bw, bh, a * alpha, tint)) {
                     uint8_t fill[4] = {tint[0], tint[1], tint[2], (uint8_t)(a * alpha * 255)};
                     for (int k = 0; k < 3; k++) {
                         int sl = LED_SLOTS[r][k];
                         if (sl < 0) continue;
                         const rectf *c = &cells[sl];
-                        panel(W_LEDP0 + sl, c->l + 4 * u, c->t + 4 * u, c->r - c->l - 8 * u, c->b - c->t - 8 * u, fill);
+                        panel(W_LEDP0 + sl, c->l, c->t, c->r - c->l, c->b - c->t, fill);
                     }
                 }
             }
