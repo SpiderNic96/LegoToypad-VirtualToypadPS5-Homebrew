@@ -12,7 +12,9 @@ typedef struct {
     uint32_t combo;       /* menu_buttons: still held when the picker opens, not a press */
     int background;       /* LegoToypad order: 0 default wallpaper, 1 Clear, 2.. wallpapers 2..26 */
     int opacity;          /* whole-picker opacity percent, 20..100 (LegoToypad default 92) */
-    int pad_skin;         /* 0 Default, 1 Old, 2 Plain */
+    int pad_skin;         /* 0 Toypad (a real toypad), 1 Default, 2 Old, 3 Plain (LegoToypad's) */
+    int ui_size;          /* 0 Auto (110%), 1 90%, 2 100%, 3 110%, 4 118% */
+    int text_size;        /* 0 Auto (125%), 1 100%, 2 115%, 3 130%, 4 150% */
 } cui_config;
 
 /* implemented by the payload (main.c): persists settings changed on the TV Settings screen */

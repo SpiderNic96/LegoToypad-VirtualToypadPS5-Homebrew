@@ -457,6 +457,178 @@ def render_settings_row(w=824, h=30):
     return Image.fromarray(rgb, "RGBA")
 
 
+
+def _rrect(w, h, radius, fill_top, fill_bottom, border=None, border_w=1.5, alpha=255):
+    W, H = S(w), S(h)
+    m = Image.new("L", (W * SS, H * SS), 0)
+    ImageDraw.Draw(m).rounded_rectangle([0, 0, W * SS - 1, H * SS - 1], radius=radius * K * SS, fill=alpha)
+    m = m.resize((W, H), Image.LANCZOS)
+    im = _shape_fill(m, _vgrad(W, H, fill_top, fill_bottom))
+    if border:
+        over(im, solid((W, H), border[:3], stroke_mask((W, H), (0, 0, W, H), False, border_w * K, radius * K), border[3]))
+    return im
+
+
+def render_key(focused):
+    """On-screen keyboard key (Settings row colours when focused)."""
+    if focused:
+        return _rrect(56, 44, 9, (58, 110, 176), (32, 74, 130), (255, 204, 51, 255), 2.2)
+    return _rrect(56, 44, 9, (30, 40, 58), (18, 25, 38), (255, 255, 255, 60), 1.2, 225)
+
+
+def render_qbox():
+    return _rrect(560, 46, 12, (12, 18, 28), (20, 28, 42), (96, 200, 255, 200), 1.8, 235)
+
+
+def render_hint_backing():
+    """Dark strip behind the button hints when the Clear background shows the game."""
+    return _rrect(300, 34, 17, (8, 12, 18), (8, 12, 18), None, 0, 170)
+
+
+# ---------------------------------------------------------------- "Toypad" skin (a real LEGO Dimensions toypad)
+# Drawn in LegoToypad window units ("toypad space": the same coordinates as PAD_CELLS); the
+# overlay shrinks the whole toypad a little and moves it below the wordmark band.
+TP_PLATE = (56, 46, 844, 558)
+TP_RING_C = (450, 195)
+TP_DISC_R, TP_RING_R = 92, 108
+TP_REGION_BOX = [(100, 220, 408, 500), (356, 103, 544, 287), (492, 220, 800, 500)]
+
+
+def _ss_canvas(w, h):
+    return Image.new("RGBA", (int(round(w * K * SS)), int(round(h * K * SS))), (0, 0, 0, 0))
+
+
+def _down(im, w, h):
+    return im.resize((int(round(w * K)), int(round(h * K))), Image.LANCZOS)
+
+
+def _vgrad(w, h, top, bottom):
+    t = np.linspace(0, 1, h, dtype=np.float32)[:, None, None]
+    a = np.asarray(top, np.float32)[None, None, :] * (1 - t) + np.asarray(bottom, np.float32)[None, None, :] * t
+    return Image.fromarray(np.repeat(a, w, axis=1).astype(np.uint8), "RGB").convert("RGBA")
+
+
+def _shape_fill(mask_l, fill_rgba_img):
+    out = fill_rgba_img.copy()
+    out.putalpha(Image.fromarray((np.asarray(out.split()[-1], np.float32) * np.asarray(mask_l, np.float32) / 255).astype(np.uint8)))
+    return out
+
+
+def _left_pad_rects():
+    """The left pad: one white piece covering slots 0 (upper), 3 and 4 (lower row)."""
+    l0, t0, r0, _ = PAD_CELLS[0]
+    _, t3, _, b3 = PAD_CELLS[3]
+    r4 = PAD_CELLS[4][2]
+    return [(l0, t0, r0, b3), (l0, t3, r4, b3)]
+
+
+def render_tp_region(region):
+    """White pad piece for an LED region, in its bounding box (right = mirror of left)."""
+    if region == 1:
+        d = TP_DISC_R * 2
+        W, H = d, d
+        c = _ss_canvas(W, H)
+        m = Image.new("L", c.size, 0)
+        ImageDraw.Draw(m).ellipse([0, 0, c.width - 1, c.height - 1], fill=255)
+        m = m.resize((S(W), S(H)), Image.LANCZOS)
+        g = np.asarray(_vgrad(S(W), S(H), (252, 252, 253), (222, 225, 229)), np.float32)
+        yy, xx = np.mgrid[0:S(H), 0:S(W)]
+        rr = np.hypot(xx - S(W) / 2, yy - S(H) / 2) / (S(W) / 2)
+        g[..., :3] *= (1.0 - 0.06 * np.clip(rr, 0, 1) ** 2)[..., None]
+        im = _shape_fill(m, Image.fromarray(g.astype(np.uint8), "RGBA"))
+        ring = stroke_mask((S(W), S(H)), (S(W) * 0.16, S(H) * 0.16, S(W) * 0.68, S(H) * 0.68), True, 1.6 * K, 0)
+        over(im, solid((S(W), S(H)), (196, 201, 207), ring, 150))
+        rim = stroke_mask((S(W), S(H)), (1, 1, S(W) - 2, S(H) - 2), True, 2.5 * K, 0)
+        over(im, solid((S(W), S(H)), (200, 204, 210), rim, 200))
+        return im
+    l, t, r, b = TP_REGION_BOX[0]
+    W, H = r - l, b - t
+    m = Image.new("L", (S(W) * SS, S(H) * SS), 0)
+    d = ImageDraw.Draw(m)
+    for (x0, y0, x1, y1) in _left_pad_rects():
+        d.rounded_rectangle([(x0 - l) * K * SS, (y0 - t) * K * SS, (x1 - l) * K * SS - 1, (y1 - t) * K * SS - 1],
+                            radius=16 * K * SS, fill=255)
+    # soften the inner corner where the upper slot meets the lower row
+    ix, iy = (PAD_CELLS[0][2] - l) * K * SS, (PAD_CELLS[3][1] - t) * K * SS
+    rad = 10 * K * SS
+    d.rectangle([ix, iy - rad, ix + rad, iy], fill=255)
+    d.ellipse([ix, iy - 2 * rad, ix + 2 * rad, iy], fill=0)
+    m = m.resize((S(W), S(H)), Image.LANCZOS)
+    im = _shape_fill(m, _vgrad(S(W), S(H), (251, 251, 252), (224, 227, 231)))
+    edge = np.asarray(m, np.float32) - np.asarray(m.filter(ImageFilter.MinFilter(5)), np.float32)
+    over(im, solid((S(W), S(H)), (196, 200, 206), Image.fromarray(np.clip(edge, 0, 255).astype(np.uint8)), 210))
+    # faint seams marking the three figure spots
+    sd = ImageDraw.Draw(im)
+    seam = (205, 209, 215, 170)
+    yh = (PAD_CELLS[3][1] - 4 - t) * K
+    sd.line([((PAD_CELLS[0][0] + 12 - l) * K, yh), ((PAD_CELLS[0][2] - 12 - l) * K, yh)], fill=seam, width=max(2, int(1.6 * K)))
+    xv = (PAD_CELLS[3][2] + 4 - l) * K
+    sd.line([(xv, (PAD_CELLS[3][1] + 12 - t) * K), (xv, (PAD_CELLS[3][3] - 12 - t) * K)], fill=seam, width=max(2, int(1.6 * K)))
+    return im if region == 0 else im.transpose(Image.FLIP_LEFT_RIGHT)
+
+
+def render_tp_plate(badge):
+    """Grey base plate: recessed bed around the pads, the dark ring round the centre disc,
+    2x2 studs in the top corners and the LEGO badge at the foot of the centre channel."""
+    pl, pt, pr, pb = TP_PLATE
+    W, H = pr - pl, pb - pt
+    X = lambda x: (x - pl) * K * SS
+    Y = lambda y: (y - pt) * K * SS
+    m = Image.new("L", (int(W * K * SS), int(H * K * SS)), 0)
+    ImageDraw.Draw(m).rounded_rectangle([0, 0, m.width - 1, m.height - 1], radius=28 * K * SS, fill=255)
+    m = m.resize((S(W), S(H)), Image.LANCZOS)
+    im = _shape_fill(m, _vgrad(S(W), S(H), (170, 173, 178), (122, 125, 131)))
+    # bevel: light top edge, dark outline
+    edge = np.asarray(m, np.float32) - np.asarray(m.filter(ImageFilter.MinFilter(7)), np.float32)
+    over(im, solid((S(W), S(H)), (84, 87, 92), Image.fromarray(np.clip(edge, 0, 255).astype(np.uint8)), 230))
+    hl = Image.new("L", m.size, 0)
+    ImageDraw.Draw(hl).rounded_rectangle([S(6), S(4), S(W) - S(6), S(40)], radius=S(22), fill=60)
+    over(im, solid((S(W), S(H)), (255, 255, 255), hl.filter(ImageFilter.GaussianBlur(S(6))), 255))
+    # recessed bed
+    bed = Image.new("L", (int(W * K * SS), int(H * K * SS)), 0)
+    d = ImageDraw.Draw(bed)
+    g = 9
+    for side in (0, 1):
+        for (x0, y0, x1, y1) in _left_pad_rects():
+            if side:
+                x0, x1 = 900 - x1, 900 - x0
+            d.rounded_rectangle([X(x0 - g), Y(y0 - g), X(x1 + g), Y(y1 + g)], radius=22 * K * SS, fill=255)
+    cx, cy = TP_RING_C
+    d.ellipse([X(cx - TP_RING_R - 6), Y(cy - TP_RING_R - 6), X(cx + TP_RING_R + 6), Y(cy + TP_RING_R + 6)], fill=255)
+    d.rounded_rectangle([X(PAD_CELLS[0][2] - 4), Y(cy + 40), X(PAD_CELLS[2][0] + 4), Y(PAD_CELLS[3][1] + 30)], radius=18 * K * SS, fill=255)
+    d.rounded_rectangle([X(PAD_CELLS[4][2] - 4), Y(PAD_CELLS[3][1]), X(PAD_CELLS[5][0] + 4), Y(pb - 14)], radius=14 * K * SS, fill=255)
+    bed = bed.resize((S(W), S(H)), Image.LANCZOS)
+    over(im, solid((S(W), S(H)), (98, 101, 107), bed, 255))
+    inner = np.asarray(bed, np.float32) - np.asarray(bed.filter(ImageFilter.MinFilter(5)), np.float32)
+    over(im, solid((S(W), S(H)), (64, 66, 71), Image.fromarray(np.clip(inner, 0, 255).astype(np.uint8)), 200))
+    # dark ring around the centre disc
+    ring = Image.new("L", bed.size, 0)
+    rx, ry = (cx - pl) * K, (cy - pt) * K
+    ImageDraw.Draw(ring).ellipse([rx - TP_RING_R * K, ry - TP_RING_R * K, rx + TP_RING_R * K, ry + TP_RING_R * K], fill=255)
+    over(im, solid((S(W), S(H)), (52, 54, 58), ring, 255))
+    rim = stroke_mask((S(W), S(H)), (rx - TP_RING_R * K, ry - TP_RING_R * K, 2 * TP_RING_R * K, 2 * TP_RING_R * K), True, 2.0 * K, 0)
+    over(im, solid((S(W), S(H)), (140, 144, 150), rim, 180))
+    # studs
+    for sx in (178, 722):
+        for ox in (-13, 13):
+            for oy in (-13, 13):
+                x, y = (sx + ox - pl) * K, (122 + oy - pt) * K
+                r = 10.5 * K
+                st = Image.new("L", bed.size, 0)
+                ImageDraw.Draw(st).ellipse([x - r + 2, y - r + 3, x + r + 2, y + r + 3], fill=150)
+                over(im, solid((S(W), S(H)), (60, 62, 66), st.filter(ImageFilter.GaussianBlur(2)), 255))
+                st = Image.new("L", bed.size, 0)
+                ImageDraw.Draw(st).ellipse([x - r, y - r, x + r, y + r], fill=255)
+                over(im, solid((S(W), S(H)), (176, 179, 184), st, 255))
+                st = Image.new("L", bed.size, 0)
+                ImageDraw.Draw(st).ellipse([x - r * 0.62, y - r * 0.7, x + r * 0.35, y + r * 0.1], fill=120)
+                over(im, solid((S(W), S(H)), (255, 255, 255), st.filter(ImageFilter.GaussianBlur(2)), 255))
+    # badge
+    bs = 32
+    b = badge.resize((S(bs), S(bs)), Image.LANCZOS)
+    im.alpha_composite(b, (int((450 - bs / 2 - pl) * K), int((pb - 26 - bs / 2 - pt) * K)))
+    return im
+
 # ---------------------------------------------------------------- main
 
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
@@ -476,7 +648,10 @@ def main(ltp: Path, web: Path):
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
+    sizes = []
+
     def save(im, name):
+        sizes.append((name, im.width, im.height))
         # soft art (halos, glows, the roster panel) is stored at half size: the overlay scales
         # every texture to its widget, and ShellUI's texture memory is small
         if name.startswith(SOFT):
@@ -507,7 +682,34 @@ def main(ltp: Path, web: Path):
     save(render_settings_row(), "srow"); n += 1
     save(Image.new("RGBA", (8, 2), (255, 204, 51, 70)), "rule"); n += 1
     save(fit(load(img(cat["settingsText"])), S(234), S(40)), "settext"); n += 1
-    save(fit(load(img(cat["wordmark"])), S(460), S(90)), "wordmark"); n += 1
+    wm = load(img(cat["wordmark"]))
+    wm = wm.crop(wm.getbbox())
+    save(fit(wm, S(460), S(90)), "wordmark"); n += 1
+    badge = wm.crop((0, 0, wm.height, wm.height))          # the LEGO badge half of the wordmark
+    save(fit(badge, S(48), S(48)), "legobadge"); n += 1
+    # "Ported by SpiderNic96" in the by-mark's own typeface (Compacta)
+    pf = A / "Fonts" / "Compacta Regular.woff2"
+    try:
+        from fontTools.ttLib import TTFont
+        import io
+        f = TTFont(str(pf)); f.flavor = None
+        buf = io.BytesIO(); f.save(buf); buf.seek(0)
+        ft = ImageFont.truetype(buf, 120)
+    except Exception:
+        ft = ImageFont.truetype(FONT, 100)
+    pm = Image.new("RGBA", (1600, 200), (0, 0, 0, 0))
+    ImageDraw.Draw(pm).text((10, 10), "Ported by SpiderNic96", font=ft, fill=(255, 255, 255, 255))
+    pm = pm.crop(pm.getbbox())
+    save(pm.resize((int(pm.width * S(22) / pm.height), S(22)), Image.LANCZOS), "portmark"); n += 1
+    # Toypad skin
+    save(render_tp_plate(badge), "tp_plate"); n += 1
+    for r in range(3):
+        save(render_tp_region(r), "tp_r%d" % r); n += 1
+    # search screen
+    save(render_key(False), "key"); n += 1
+    save(render_key(True), "keysel"); n += 1
+    save(render_qbox(), "qbox"); n += 1
+    save(render_hint_backing(), "hintbg"); n += 1
     save(fit(load(img(cat["byMark"])), S(400), S(30)), "bymark"); n += 1
     pads = [load(img(u)) for u in cat["pads"]]
     for i in range(7):
@@ -591,7 +793,8 @@ def main(ltp: Path, web: Path):
                 portrait(b)
                 rows.append("V\t%d\t%d\t%d\t%d\t%s\t%s" % (wi, gi, b["build"], b["bin"], b["name"], b["color"]))
     (out / "catalog.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
-    (out / "skins.txt").write_text("\n".join(["Default"] + skins[1:]) + "\n", encoding="utf-8")
+    (out / "skins.txt").write_text("\n".join(["Toypad", "Default"] + skins[1:]) + "\n", encoding="utf-8")
+    (out / "sizes.tsv").write_text("".join("%s\t%d\t%d\n" % e for e in sizes), encoding="utf-8")
     size = sum(p.stat().st_size for p in out.iterdir())
     print("ui pack: %s  (%d textures, %d portraits, %.1f MB)" % (out, n, len(done), size / 1e6))
 

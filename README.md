@@ -32,11 +32,15 @@ opens harrysof's LegoToypad picker over the game instead of the text menu:
   the figure; **R1** goes straight to loading; **L1** clears; **Triangle** opens Settings;
   **Circle** closes.
 - **Settings** (LegoToypad's list): background (26 wallpapers or **Clear**, so the game shows
-  through), pad skin (Default / Old / Plain), window transparency (20-100%), sneak peek size,
+  through), pad skin (**Toypad**, a real toypad, or LegoToypad's Default / Old / Plain), window
+  transparency (20-100%), UI size and text size (Auto suits a TV), sneak peek size,
   toypad LEDs, fast loading, the phone remote's address, clear all pads, reset to defaults.
   Changes are saved to `config.ini`.
 - **Worlds / roster / builds:** **X** opens or loads, **Circle** goes back, **L1/R1** change the
-  sort (Default, Year 1, Year 2, User, Favorites, Story), **Triangle** favourites a figure.
+  sort (Default, Year 1, Year 2, User, Favorites, Story), **Triangle** favourites a figure,
+  **Square** opens Search.
+- **Search:** type on the on-screen keyboard (**Square** deletes); results update as you type.
+  **Up** from the keyboard moves into the results, **X** loads.
 - **Sneak peek:** hold **L2** during gameplay to see the pads, occupants and LEDs in the screen
   corners (`peek_buttons`, `peek_size`).
 - `fast_load=1` closes the picker after a figure is loaded. `overlay_textures=2` switches the art
