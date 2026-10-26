@@ -250,6 +250,16 @@ asset tables, and `tools/build_ui_pack.py` renders the console picker's art from
 
 ---
 
+## Contributors
+
+<table>
+  <tr>
+    <td align="center"><a href="https://github.com/harrysof"><img src="https://github.com/harrysof.png?size=100" width="80" alt="harrysof"/><br/><b>harrysof</b></a><br/>LegoToypad: picker design, phone app, art</td>
+    <td align="center"><a href="https://github.com/HeitorSpectre"><img src="https://github.com/HeitorSpectre.png?size=100" width="80" alt="HeitorSpectre"/><br/><b>HeitorSpectre</b></a><br/>Original Virtual Toy Pad</td>
+    <td align="center"><a href="https://github.com/SpiderNic96"><img src="https://github.com/SpiderNic96.png?size=100" width="80" alt="SpiderNic96"/><br/><b>SpiderNic96</b></a><br/>PS5 port, console picker, phone remote</td>
+  </tr>
+</table>
+
 ## Credits
 
 This project stands on other people's work:
