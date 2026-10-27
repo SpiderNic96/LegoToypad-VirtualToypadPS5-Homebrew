@@ -44,6 +44,14 @@ Notices are kept in each file.
 `src/overlay/shsrv` (elfldr, pt) and `src/injector/pt.c`/`pt.h`: Copyright (C) 2024 John Törnblom.
 See `src/overlay/shsrv/LICENSE`.
 
+## GoldHEN Plugins SDK — MIT License
+
+The PS4 plugin (`VirtualToyPad.prx`) links `libGoldHEN_Hook.a` and `crtprx.o` from the
+[GoldHEN Plugins SDK](https://github.com/GoldHEN/GoldHEN_Plugins_SDK), Copyright (c) 2022 GoldHEN —
+full text in `licenses/GoldHEN-Plugins-SDK-MIT.txt` (also included in the PS4 release). It is
+compiled with the OpenOrbis PS4 Toolchain (GPL-3.0); no toolchain code beyond its system-library
+import stubs is linked.
+
 ## stb_image — public domain / MIT
 
 `src/injector/third_party/stb_image.h`, by Sean Barrett (https://github.com/nothings/stb).

@@ -12,6 +12,10 @@ One ELF payload gives you:
 - **A phone remote** — LegoToypad's own web app served by the PS5 to any phone on your Wi-Fi.
 - **60 FPS** and **1440p / 2160p internal resolution** patches (connorh315's patches).
 
+**New: PS4 and PS4 Pro (beta).** A GoldHEN plugin brings the same virtual Toy Pad, saved
+upgrades, phone remote, in-game menu and 60 FPS to a jailbroken PS4 — see [PS4](#ps4-and-ps4-pro-goldhen-plugin-beta).
+It has not been tested on real PS4 hardware yet; the TV picker is PS5-only for now.
+
 Built on top of **HeitorSpectre's [Virtual Toy Pad](https://github.com/HeitorSpectre/Virtual-Toy-Pad)**
 (see [Credits](#credits)).
 
@@ -50,7 +54,7 @@ Built on top of **HeitorSpectre's [Virtual Toy Pad](https://github.com/HeitorSpe
 |---|---|
 | **Game** | LEGO Dimensions (PS4), **EU CUSA01176 update 1.24** or **US CUSA00935 update 1.23** |
 | **Install type** | Disc + update, PKG or fPKG — anything that runs those exact versions. The payload checks the game's code before patching and refuses other versions (a disc without its update is v1.00). |
-| **Console** | Jailbroken PS5 with an ELF loader (etaHEN, elfldr...). Developed on firmware 13.60 (kstuff lite, etaHEN, ShadowMountPlus). |
+| **Console** | Jailbroken PS5 with an ELF loader (etaHEN, elfldr...). Developed on firmware 13.60 (kstuff lite, etaHEN, ShadowMountPlus). **PS4 / PS4 Pro:** GoldHEN 2.3 or newer, as a plugin ([beta](#ps4-and-ps4-pro-goldhen-plugin-beta)). |
 | **Phone** | Any phone browser on the same network |
 
 The console picker draws itself inside SceShellUI. **Don't run another ShellUI overlay at the same
@@ -77,6 +81,50 @@ HeitorSpectre's original in-game text menu automatically.
 
 **Updating:** close the game, replace `/data/ldmod/web` with the new one, send the new ELF.
 Settings, favourites and saved figures stay.
+
+---
+
+## PS4 and PS4 Pro (GoldHEN plugin, beta)
+
+> **Status: built and host-tested, not yet tested on a real PS4.** Please report back (log file
+> below) if you try it.
+
+On PS4 there is no payload to send: **`VirtualToyPad.prx`** is a GoldHEN plugin that GoldHEN's
+plugin loader puts inside LEGO Dimensions every time the game starts. It is built from the same
+game hook and phone-remote code as the PS5 version.
+
+| Feature | PS4 / PS4 Pro |
+|---|---|
+| Virtual Toy Pad, every figure, saved vehicle upgrades (`/data/ldmod/tags`) | yes |
+| Phone remote (LegoToypad web app, port 8765) with LED mirror | yes |
+| In-game menu (HeitorSpectre's classic menu, **L3 + R3**) | yes |
+| TV picker with toypad LEDs, search, sneak peek, Settings | **not yet** (PS5 only — it is drawn by the PS5 system UI) |
+| 60 FPS patch | yes — PS4 Pro holds it best, a base PS4 dips in busy scenes |
+| Internal resolution | base PS4: 1080 only · PS4 Pro: up to 1440 (higher values are capped) |
+
+**Install (PS4):**
+
+1. Close LEGO Dimensions. GoldHEN **2.3 or newer** must be running (plugins are built in).
+2. Over FTP, copy from the PS4 release zip:
+   - `GoldHEN/plugins/VirtualToyPad.prx` → **`/data/GoldHEN/plugins/VirtualToyPad.prx`**
+   - `data/ldmod` → **`/data/ldmod`** (same web folder as the PS5 release)
+3. Add these lines to **`/data/GoldHEN/plugins.ini`** (create it if it's missing; keep any other
+   sections you already have):
+   ```ini
+   [CUSA01176]
+   /data/GoldHEN/plugins/VirtualToyPad.prx
+
+   [CUSA00935]
+   /data/GoldHEN/plugins/VirtualToyPad.prx
+   ```
+4. Start LEGO Dimensions (EU 1.24 or US 1.23 — same versions as PS5). You get **"Virtual Toy Pad is
+   active"** at boot and **"Virtual Toy Pad connected!"** once the game talks to the pad.
+5. Hold **L3 + R3** for the menu, or open **`http://<PS4 IP>:8765`** on your phone.
+
+`config.ini` uses the same keys as on PS5 (`menu_buttons`, `hold_ms`, `fps60`, `resolution`,
+`force_fake`, `restore_pad`, `draw_text`, `notify_menu`); the overlay keys are ignored. The log is
+**`/data/ldmod/vtp_ps4.log`**. If GoldHEN's own 60 FPS cheat/patch for this game is on, the plugin
+sees the patched code and leaves it alone.
 
 ---
 
@@ -210,6 +258,9 @@ resolution=1080
 - **Log says "no retry for this ShellUI"** — rest mode and wake the PS5 (or reboot and re-jailbreak).
 - **Phone page doesn't load** — the web folder must be at `/data/ldmod/web`; otherwise the log says
   `no bundle at /data/ldmod/web`.
+- **PS4: nothing happens at all** — no GoldHEN "Loaded 1 plugin(s)" notification means the
+  `plugins.ini` section or path is wrong (the title ID must match your copy). With the notification
+  but no `vtp_ps4.log`, `/data/ldmod` isn't writable: give it 777 permissions over FTP.
 
 ---
 
@@ -229,6 +280,15 @@ git clone https://github.com/harrysof/LegoToypad
 tools/make_web_bundle.sh LegoToypad   # -> build/web (copy it to /data/ldmod/web)
 ```
 
+**PS4 plugin:** needs the [OpenOrbis PS4 Toolchain](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain)
+(v0.5.2+) and a built [GoldHEN Plugins SDK](https://github.com/GoldHEN/GoldHEN_Plugins_SDK):
+
+```bash
+export OO_PS4_TOOLCHAIN=/path/to/OpenOrbis/PS4Toolchain GOLDHEN_SDK=/path/to/GoldHEN_Plugins_SDK
+make -C ps4                           # -> ps4/build/VirtualToyPad.prx
+tools/ps4-host-test/run.sh 1          # optional: host test of the plugin glue (EU layout)
+```
+
 `build.sh` builds three parts: the game hook (`src/hook` → `ldhook.bin`, injected into the game),
 the SceShellUI renderer (`src/overlay` → `vtp_shellui.elf`, checked for loader-safe relocations) and
 the payload (`src/injector`) that embeds both. The web folder is generated from a LegoToypad
@@ -245,7 +305,8 @@ asset tables, and `tools/build_ui_pack.py` renders the console picker's art from
 | `src/overlay/controller` | loads the renderer into SceShellUI (from Common FPS) |
 | `src/overlay/renderer` | the renderer running inside SceShellUI (PUI widgets, textures) |
 | `src/overlay/shsrv` | John Törnblom's shsrv ELF loader and ptrace helpers |
-| `tools` | web bundle and picker-art builders, renderer checker |
+| `ps4` | the PS4 GoldHEN plugin: wires the same hook module up from inside the game |
+| `tools` | web bundle and picker-art builders, renderer checker, PS4 host test |
 | `docs/screenshots` | README images |
 
 ---
@@ -278,6 +339,9 @@ This project stands on other people's work:
   firmware 11.xx-13.xx hook backend) and **erickdavestech** (ImageBox sprites, firmware 13.60
   validation, HUD overlay).
 - **connorh315** — the LEGO Dimensions 60 FPS and internal-resolution patches.
+- **GoldHEN team (SiSTRo and contributors)** — GoldHEN and the
+  [GoldHEN Plugins SDK](https://github.com/GoldHEN/GoldHEN_Plugins_SDK) (MIT) the PS4 plugin is
+  built with; **OpenOrbis** — the PS4 toolchain.
 - **John Törnblom** — the [PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk) and shsrv
   (`elfldr`, `pt`) used for injection.
 - **Sean Barrett** — [stb_image](https://github.com/nothings/stb) (PNG/JPEG decoding).
@@ -286,7 +350,7 @@ This project stands on other people's work:
   [iFixit teardown](https://www.ifixit.com/Device/Lego_Dimensions_Starter_Pack) behind the realistic
   LED look.
 - **SpiderNic96** — EU 1.24 port, 60 FPS / resolution integration, the phone remote on the console,
-  the console picker overlay and its renderer.
+  the console picker overlay and its renderer, the PS4 plugin.
 
 ## License and disclaimer
 
