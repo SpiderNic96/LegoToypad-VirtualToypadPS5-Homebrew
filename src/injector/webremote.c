@@ -33,11 +33,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#ifdef LD_PS4_PLUGIN
-#include "../../ps4/source/ps4_shim.h"   /* same process: game memory is plain memory */
-#else
 #include <ps5/kernel.h>
-#endif
 
 #include "../hook/ldhook.h"
 #include "webremote.h"

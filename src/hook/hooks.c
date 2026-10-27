@@ -3,11 +3,7 @@
  * redirects the game's GOT entries for sceUsbd* / scePadReadState to the h_* functions. */
 #include "ldhook.h"
 
-#ifdef LD_PS4_PLUGIN   /* PS4 GoldHEN plugin: compiled into the .prx, HDR is an ordinary global */
-ld_header HDR = {
-#else
 __attribute__((section(".hdr"), used)) ld_header HDR = {
-#endif
     .magic = LDH_MAGIC,
     .version = LDH_VERSION,
     .opt_hold_ms = 250,
@@ -17,7 +13,6 @@ __attribute__((section(".hdr"), used)) ld_header HDR = {
 
 /* ------------------------------------------------------------- utilities */
 
-#ifndef LD_PS4_PLUGIN   /* the freestanding blob has no libc; the PS4 plugin links the system one */
 void *memcpy(void *d, const void *s, unsigned long n) {
     uint8_t *dd = d; const uint8_t *ss = s;
     while (n--) *dd++ = *ss++;
@@ -34,7 +29,6 @@ float sqrtf(float x) {
     __asm__("sqrtss %1, %0" : "=x"(r) : "x"(x));
     return r;
 }
-#endif
 
 static void lock(void) {
     while (__atomic_exchange_n(&HDR.lock, 1, __ATOMIC_ACQUIRE))
