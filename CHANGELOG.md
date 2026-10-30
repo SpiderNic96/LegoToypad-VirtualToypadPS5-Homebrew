@@ -1,3 +1,11 @@
+# 2.0.2 — Console picker on firmware 10.xx (SpiderNic96)
+
+- **Console picker now starts where ShellUI's code can't be read through ptrace.** A 10.40 log
+  showed every startup probe failing with EFAULT (`status=-5 read=14`), so the picker never came
+  up and ShellUI later restarted. Reads and writes of ShellUI's code now fall back to the kernel's
+  physical-memory map. The bytes are still checked before and after each write, and the original
+  is put back on any mismatch.
+
 # 2.0.1 — Firmware 7.00–13.60, safer hooking (SpiderNic96)
 
 - **Console picker on firmware 7.00–13.60.** 9.60 without etaHEN now uses the background render
