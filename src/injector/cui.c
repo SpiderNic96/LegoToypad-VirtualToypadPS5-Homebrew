@@ -32,6 +32,7 @@
 #include <unistd.h>
 
 #include "cui.h"
+#include "sfx.h"
 #include "vtp_api.h"
 #include "../overlay/common/ovl_proto.h"
 #ifndef CUI_HOST_TEST
@@ -748,6 +749,7 @@ static void act_collect(void) {
     g_act.result_ready = 0;
     pthread_mutex_unlock(&g_act_mx);
     if (!kind) return;
+    if (!rc) sfx_play(kind == ACT_MOVE ? SFX_MOVE : (kind == ACT_CLEAR || kind == ACT_CLEARALL) ? SFX_REMOVE : SFX_SELECT);
     set_status(rc ? 1 : (kind == ACT_CLEAR || kind == ACT_CLEARALL) ? 1 : kind == ACT_MOVE ? 2 : 0, "%s", msg);
 }
 
@@ -1303,6 +1305,21 @@ static void press(uint32_t p) {
 
 /* ------------------------------------------------------------------ input */
 
+/* UI sounds: Select on Cross, Navigate whenever the highlighted item changes (edge pushes stay silent) */
+static uint64_t sel_sig(void) {
+    uint64_t h = 1469598103934665603ULL;
+    int v[] = {S.screen, S.slot, S.action, S.fr_index, S.r_index, S.plus_index, S.set_index, S.k_row, S.k_col, S.s_index, S.s_zone, S.sort, S.moving};
+    for (unsigned i = 0; i < sizeof v / sizeof v[0]; i++) { h ^= (uint32_t)v[i]; h *= 1099511628211ULL; }
+    return h;
+}
+
+static void press_sfx(uint32_t p) {
+    uint64_t before = sel_sig();
+    press(p);
+    if (p & B_CROSS) sfx_play(SFX_SELECT);
+    else if (sel_sig() != before) sfx_play(SFX_NAVIGATE);
+}
+
 static void input_tick(const vtp_ext *e) {
     uint64_t now = ms_now();
     if (!e->valid) return;
@@ -1323,13 +1340,13 @@ static void input_tick(const vtp_ext *e) {
         uint32_t pressed = nav & ~S.nav;
         S.nav = nav;
         if (pressed & (B_UP | B_DOWN | B_LEFT | B_RIGHT)) { S.held_since_dir = 1; S.repeat_at = now + 380; }
-        if (pressed) press(pressed);
+        if (pressed) press_sfx(pressed);
         if (!S.open) return;
     }
     /* D-pad / stick auto-repeat while held */
     uint32_t dirs = S.nav & (B_UP | B_DOWN | B_LEFT | B_RIGHT);
     if (!dirs) S.held_since_dir = 0;
-    else if (S.held_since_dir && now >= S.repeat_at) { S.repeat_at = now + 110; press(dirs); }
+    else if (S.held_since_dir && now >= S.repeat_at) { S.repeat_at = now + 110; press_sfx(dirs); }
 }
 
 /* ------------------------------------------------------------------ drawing */
@@ -2010,6 +2027,7 @@ static void *cui_thread(void *arg) {
 int cui_start(void) {
     if (!C.enabled) { LOGC("disabled in config.ini (overlay=0)"); return -1; }
     define_types();
+    sfx_init();
     pthread_t t, a;
     if (pthread_create(&a, 0, action_thread, 0)) return -1;
     return pthread_create(&t, 0, cui_thread, 0);
