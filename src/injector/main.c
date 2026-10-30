@@ -84,6 +84,9 @@ static void notify(const char *fmt, ...) {
     sceKernelSendNotificationRequest(0, &req, sizeof req, 0);
 }
 
+/* the overlay crash-loop guard tripped (ovl_controller) */
+static void overlay_guard_notify(const char *msg) { notify("LEGO Dimensions: %s", msg); }
+
 static uint64_t now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -931,6 +934,7 @@ int main(void) {
                          (int)cfg.background, (int)cfg.opacity, (int)cfg.pad_skin, (int)cfg.ui_size,
                          (int)cfg.text_size, (int)cfg.led_style};
         cui_configure(&cc);
+        ovl_ctl_set_guard(DATA_DIR "/overlay_guard.txt", overlay_guard_notify);
         ovl_ctl_enable((int)cfg.overlay);
         if (cfg.overlay) cui_start();
     }

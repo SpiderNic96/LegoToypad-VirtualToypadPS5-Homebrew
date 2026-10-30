@@ -1,3 +1,15 @@
+# 2.0.4 — No more system-software crash loop (SpiderNic96)
+
+- **Crash-loop guard for the console picker.** On a 7.20 console the picker crashed SceShellUI
+  ("Something went wrong with the system software… Please wait"). The payload then loaded it
+  again into the restarted ShellUI, which crashed again, endlessly.
+  - Now, if ShellUI restarts within 3 minutes of the picker being loaded into it, the picker
+    stays off until the next reboot. A notification says so.
+  - The toy pad, the phone remote and the in-game classic menu keep working.
+  - The guard is remembered in `/data/ldmod/overlay_guard.txt` for that boot, so sending the
+    payload again doesn't restart the loop. After a reboot the picker is tried once more;
+    `overlay=0` in `config.ini` turns it off for good.
+
 # 2.0.3 — Resolution safety net (SpiderNic96)
 
 - **A resolution that crashes falls back by itself.** On a real console a PS4 game keeps its PS4
