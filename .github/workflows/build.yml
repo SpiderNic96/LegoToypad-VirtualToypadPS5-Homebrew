@@ -1,0 +1,43 @@
+name: Build VirtualToyPad
+
+on:
+  workflow_dispatch:        # lets you press "Run workflow" by hand
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld make xxd unzip wget python3-pyelftools
+
+      - name: Install PS5 Payload SDK
+        run: |
+          wget -q https://github.com/ps5-payload-dev/sdk/releases/latest/download/ps5-payload-sdk.zip
+          sudo unzip -q ps5-payload-sdk.zip -d /opt
+
+      - name: Build
+        env:
+          PS5_PAYLOAD_SDK: /opt/ps5-payload-sdk
+        run: bash build.sh
+
+      - name: Package
+        run: |
+          mkdir -p out/data/ldmod
+          cp build/ldinject.elf out/VirtualToyPad.elf
+          if [ -d sfx ]; then cp -r sfx out/data/ldmod/sfx; fi
+          ls -R out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VirtualToyPad
+          path: out
