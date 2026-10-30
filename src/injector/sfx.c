@@ -5,6 +5,7 @@
  * /data/ldmod/sfx/, converted to 48 kHz stereo 16-bit once at start, and played from a worker
  * thread one 256-frame grain at a time, so a new sound can cut the old one instantly.
  */
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +17,20 @@
 
 void web_log(const char *fmt, ...);
 #define SLOG(...) web_log("sfx: " __VA_ARGS__)
+
+/* on-screen PS5 notification, so the result is visible without reading the log */
+typedef struct { char useless1[45]; char message[3075]; } sfx_notify_t;
+int sceKernelSendNotificationRequest(int, sfx_notify_t *, size_t, int);
+static void sfx_note(const char *fmt, ...) {
+    sfx_notify_t req;
+    memset(&req, 0, sizeof req);
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(req.message, 200, fmt, ap);
+    va_end(ap);
+    web_log("sfx: %s", req.message);
+    sceKernelSendNotificationRequest(0, &req, sizeof req, 0);
+}
 
 /* libkernel: weak so the link cannot fail; checked for NULL at run time */
 int sceKernelLoadStartModule(const char *name, size_t argc, const void *argv, unsigned flags,
@@ -107,25 +122,48 @@ static int read_volume(void) {
     return v;
 }
 
+static int g_port_type = -1;
+static char g_err[160];
+
 static int open_audio(audio_output_fn *output) {
-    if (!sceKernelLoadStartModule || !sceKernelDlsym) { SLOG("libkernel module loader unavailable"); return -1; }
+    if (!sceKernelLoadStartModule || !sceKernelDlsym) { snprintf(g_err, sizeof g_err, "no module loader"); return -1; }
     int mod = sceKernelLoadStartModule("/system/common/lib/libSceAudioOut.sprx", 0, 0, 0, 0, 0);
     if (mod < 0) mod = sceKernelLoadStartModule("libSceAudioOut.sprx", 0, 0, 0, 0, 0);
-    if (mod < 0) { SLOG("cannot load libSceAudioOut (0x%x)", (unsigned)mod); return -1; }
+    if (mod < 0) { snprintf(g_err, sizeof g_err, "load libSceAudioOut 0x%x", (unsigned)mod); return -1; }
     audio_init_fn init = 0; audio_open_fn open_ = 0; audio_output_fn out = 0;
     sceKernelDlsym(mod, "sceAudioOutInit", (void **)&init);
     sceKernelDlsym(mod, "sceAudioOutOpen", (void **)&open_);
     sceKernelDlsym(mod, "sceAudioOutOutput", (void **)&out);
-    if (!open_ || !out) { SLOG("audio symbols not found"); return -1; }
-    if (init) init();
-    /* user id 0xFF = system; port types: 0 MAIN, 1 BGM. Format 1 = signed 16-bit stereo. */
-    static const int TYPES[] = {0, 1};
+    if (!open_ || !out) { snprintf(g_err, sizeof g_err, "audio symbols missing"); return -1; }
+    int ir = init ? init() : 0;
+    SLOG("sceAudioOutInit -> 0x%x", (unsigned)ir);
+    /* user id 0xFF = system; port types: 0 MAIN, 1 BGM, 3 PERSONAL, 127 AUX. Format 1 = S16 stereo. */
+    static const int TYPES[] = {0, 1, 127, 3};
+    g_err[0] = 0;
     for (unsigned i = 0; i < sizeof TYPES / sizeof TYPES[0]; i++) {
         int h = open_(0xFF, TYPES[i], 0, GRAIN, RATE, 1);
-        if (h >= 0) { *output = out; SLOG("audio port opened (type %d)", TYPES[i]); return h; }
+        if (h >= 0) { *output = out; g_port_type = TYPES[i]; return h; }
         SLOG("sceAudioOutOpen type %d failed (0x%x)", TYPES[i], (unsigned)h);
+        size_t used = strlen(g_err);
+        if (i < 2) snprintf(g_err + used, sizeof g_err - used, "%st%d:0x%x", used ? " " : "", TYPES[i], (unsigned)h);
     }
     return -1;
+}
+
+/* 0.25 s test tone straight to the port: proves the audio path works even without WAV files */
+static void play_test_tone(audio_output_fn output, int h) {
+    int16_t grain[GRAIN * 2];
+    uint32_t total = RATE / 4, pos = 0;
+    while (pos < total) {
+        for (int i = 0; i < GRAIN; i++) {
+            uint32_t k = pos + (uint32_t)i;
+            int amp = k < total ? (int)(6000 - (uint64_t)6000 * k / total) : 0;   /* fade out */
+            int16_t v = (int16_t)(((k * 880 / RATE) & 1) ? amp : -amp);                  /* 440 Hz square */
+            grain[i * 2] = grain[i * 2 + 1] = v;
+        }
+        output(h, grain);
+        pos += GRAIN;
+    }
 }
 
 static void *sfx_thread(void *arg) {
@@ -140,11 +178,14 @@ static void *sfx_thread(void *arg) {
             if (rc != -1) { SLOG("%s: unsupported or bad WAV (%d)", path, rc); break; }
         }
     }
-    if (!loaded || volume <= 0) { SLOG("no sounds loaded (or volume 0): staying silent"); return 0; }
     audio_output_fn output = 0;
     int h = open_audio(&output);
-    if (h < 0) return 0;
-    SLOG("ready: %d sound(s), volume %d", loaded, volume);
+    if (h < 0) { sfx_note("SFX: audio could not open (%s)", g_err[0] ? g_err : "unknown"); return 0; }
+    if (!loaded) { sfx_note("SFX: audio OK (port %d) but no WAV files in /data/ldmod/sfx/", g_port_type); }
+    else if (volume <= 0) { sfx_note("SFX: audio OK but volume.txt is 0"); }
+    else sfx_note("SFX ready: %d sound(s), port %d, volume %d", loaded, g_port_type, volume);
+    play_test_tone(output, h);
+    if (!loaded || volume <= 0) return 0;
     g_ready = 1;
 
     int16_t grain[GRAIN * 2];
