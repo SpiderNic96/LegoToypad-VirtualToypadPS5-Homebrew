@@ -167,7 +167,8 @@ changing them):
 ```ini
 # Patch the engine to target 60 FPS instead of 30 (connorh315's patch; 1/0)
 fps60=1
-# Internal render resolution: 1080 (game default), 1440 or 2160
+# Internal render resolution: 1080 (game default), 1440 or 2160. If the game closes before the
+# Toy Pad connects, the next start drops one step (delete res_fallback.txt to retry)
 resolution=1080
 ```
 
@@ -175,6 +176,12 @@ resolution=1080
   isn't the stock bytes (for example an fPKG with a 60 FPS patch already built in) it is left alone.
 - **`resolution`** raises the internal render resolution; the console still outputs its usual video
   mode. 1440 and 2160 cost GPU time — if the frame rate dips, go back to 1080 or 1440.
+- **2160 can crash the game.** The game keeps its PS4 memory budget on a PS5, and 4K render
+  targets may not fit. Every start above 1080 is therefore a trial:
+  - If the game closes before the toy pad connects, the next start drops one step
+    (2160 → 1440 → 1080) and a notification tells you.
+  - The drop is remembered in `/data/ldmod/res_fallback.txt`. Delete that file, or change
+    `resolution=`, to try the higher setting again.
 - Both patches are identical for EU v1.24 and US v1.23 and are verified before writing.
 
 ### All `config.ini` settings

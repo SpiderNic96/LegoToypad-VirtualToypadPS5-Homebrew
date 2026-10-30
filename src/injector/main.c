@@ -148,7 +148,8 @@ static void write_config(void) {
                "# Put back the figures from the last session when the game starts (1/0)\nrestore_pad=%u\n"
                "# Diagnostic capture of Characters UI (1/0; disabled by default)\ncapture_selection=%u\n"
                "# Patch the engine to target 60 FPS instead of 30 (connorh315's patch; 1/0)\nfps60=%u\n"
-               "# Internal render resolution: 1080 (game default), 1440 or 2160\nresolution=%u\n\n"
+               "# Internal render resolution: 1080 (game default), 1440 or 2160. If the game closes before the\n"
+               "# Toy Pad connects, the next start drops one step (delete res_fallback.txt to retry)\nresolution=%u\n\n"
                "# Console overlay: LegoToypad's toypad picker drawn by the PS5 system UI (1/0).\n"
                "# menu_buttons open it; with 0 (or if it cannot start) the classic text menu is used.\n"
                "overlay=%u\n"
@@ -513,13 +514,46 @@ static const struct { uint32_t off; uint16_t stock; uint8_t is_w; } RES_SITES[6]
     {0x7148f8, 1920, 1}, {0x714902, 1080, 0}, {0x714edc, 1920, 1},   /* patch addresses - 0x400000 */
     {0x714ee3, 1080, 0}, {0x714f23, 1920, 1}, {0x714f28, 1080, 0}};
 
+/* Safety net for the higher resolutions. On a real console a PS4 game keeps a PS4-sized memory
+ * budget, and 4K render targets may not fit: the game then hangs during start-up and closes
+ * before it ever talks to the toy pad. Every launch above 1080 is a trial (res_trial.txt). It
+ * passes the moment the game talks to the toy pad (monitor() removes the file). If the file is
+ * still there at the next launch, that trial failed: the next lower resolution is used from then
+ * on (res_fallback.txt: "<resolution in config.ini> <cap>"). Changing resolution= in config.ini,
+ * or deleting res_fallback.txt, tries the higher one again. */
+#define RES_TRIAL DATA_DIR "/res_trial.txt"
+#define RES_CAP   DATA_DIR "/res_fallback.txt"
+
+static unsigned res_lower(unsigned r) { return r > 1440 ? 1440 : 1080; }
+
+static unsigned res_effective(void) {
+    unsigned want = cfg.resolution, trial = 0, req = 0, cap = 0;
+    FILE *f = fopen(RES_TRIAL, "r");
+    if (f) { if (fscanf(f, "%u", &trial) != 1) trial = 0; fclose(f); remove(RES_TRIAL); }
+    if (trial > 1080) {   /* the last launch at `trial` never reached the toy pad */
+        cap = res_lower(trial);
+        if ((f = fopen(RES_CAP, "w"))) { fprintf(f, "%u %u\n", cfg.resolution, cap); fclose(f); }
+        LOG("resolution: the last start at %up closed before the toy pad connected; using %up from now on", trial, cap);
+        notify("LEGO Dimensions closed before the Toy Pad connected at %up.\nUsing %up from now on (delete %s to try %up again).",
+               trial, cap, RES_CAP, trial);
+    }
+    if ((f = fopen(RES_CAP, "r"))) {
+        if (fscanf(f, "%u %u", &req, &cap) != 2) req = cap = 0;
+        fclose(f);
+        if (req != cfg.resolution) { remove(RES_CAP); cap = 0; }   /* config.ini changed: try what it says */
+    } else cap = 0;
+    if (cap && want > cap) { LOG("resolution: %u did not start before, using %u (delete %s to retry)", want, cap, RES_CAP); want = cap; }
+    return want;
+}
+
 static void apply_resolution(pid_t pid, intptr_t base) {
     uint16_t w, h;
-    switch (cfg.resolution) {
+    unsigned res = res_effective();
+    switch (res) {
     case 1080: LOG("resolution: game default (1920x1080)"); return;
     case 1440: w = 2560; h = 1440; break;
     case 2160: w = 3840; h = 2160; break;
-    default: LOG("resolution=%u not supported (use 1080, 1440 or 2160); keeping default", cfg.resolution); return;
+    default: LOG("resolution=%u not supported (use 1080, 1440 or 2160); keeping default", res); return;
     }
     uint16_t cur[6];
     for (int i = 0; i < 6; i++) {
@@ -539,6 +573,8 @@ static void apply_resolution(pid_t pid, intptr_t base) {
         }
     }
     LOG("resolution: internal render set to %ux%u", w, h);
+    FILE *tf = fopen(RES_TRIAL, "w");   /* passes once the game talks to the toy pad */
+    if (tf) { fprintf(tf, "%u\n", res); fclose(tf); }
 }
 
 static int install_render_hook(pid_t pid, intptr_t base, intptr_t target) {
@@ -789,6 +825,7 @@ static void monitor(pid_t pid, intptr_t mem, intptr_t base) {
         if (!reported && s.usb_cmds > 0) {
             reported = 1;
             LOG("game is talking to the virtual Toy Pad (fake_opened=%u)", s.fake_opened);
+            if (!remove(RES_TRIAL)) LOG("resolution: this resolution starts fine");
             notify("Virtual Toy Pad connected!\nPress %s to open the menu.", cfg.combo_txt);
         }
         if (s.passthrough && !last_cmds) { LOG("real Toy Pad detected: emulation disabled"); last_cmds = 1; }

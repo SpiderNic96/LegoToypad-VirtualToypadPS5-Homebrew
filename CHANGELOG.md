@@ -1,3 +1,14 @@
+# 2.0.3 — Resolution safety net (SpiderNic96)
+
+- **A resolution that crashes falls back by itself.** On a real console a PS4 game keeps its PS4
+  memory budget, and 4K render targets may not fit: at `resolution=2160` the game hung during
+  start-up and closed before the toy pad connected. Every start above 1080 is now a trial:
+  - It passes once the game talks to the toy pad.
+  - If the game closes (or the PS5 goes down) before that, the next start uses one step lower
+    (2160 → 1440 → 1080), with a notification.
+  - The cap is kept in `/data/ldmod/res_fallback.txt`. Delete it, or change `resolution=` in
+    `config.ini`, to try the higher one again.
+
 # 2.0.2 — Console picker on firmware 10.xx (SpiderNic96)
 
 - **Console picker now starts where ShellUI's code can't be read through ptrace.** A 10.40 log
