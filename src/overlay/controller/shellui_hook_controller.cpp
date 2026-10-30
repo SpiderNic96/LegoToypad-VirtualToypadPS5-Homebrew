@@ -166,11 +166,21 @@ ShellUiHookPollResult poll_and_apply_shellui_hook(
         : (backend == ShellUiHookBackend::Mdbg ? "mdbg" : "ptrace-io");
 
     const auto read_target = [&](void* destination, std::size_t size) {
-        if (backend == ShellUiHookBackend::Mdbg)
-            return mdbg_copyout(shellui_pid,
+        const int rc = backend == ShellUiHookBackend::Mdbg
+            ? mdbg_copyout(shellui_pid,
+                static_cast<intptr_t>(request.method_address), destination, size)
+            : pt_copyout(shellui_pid,
                 static_cast<intptr_t>(request.method_address), destination, size);
-        return pt_copyout(shellui_pid,
-            static_cast<intptr_t>(request.method_address), destination, size);
+        if (rc == 0)
+            return 0;
+        /*
+         * Some firmware (seen on 10.40) refuses a ptrace read of ShellUI's JIT
+         * code with EFAULT, so the probe failed and the picker never started.
+         * The SDK's kernel_proc_copyout reads the same bytes through the
+         * kernel's physical map, whatever the page protection. Read only.
+         */
+        return kernel_proc_copyout(shellui_pid,
+            static_cast<intptr_t>(request.method_address), destination, size) == 0 ? 0 : rc;
     };
     const auto write_target = [&](const std::uint8_t* bytes) {
         /*
@@ -224,9 +234,40 @@ ShellUiHookPollResult poll_and_apply_shellui_hook(
             return rc;
         }
 
-        if (backend == ShellUiHookBackend::Mdbg)
-            return mdbg_copyin(shellui_pid, bytes + offset, address, size);
-        return pt_copyin(shellui_pid, bytes + offset, address, size);
+        if (backend == ShellUiHookBackend::Mdbg) {
+            const int mrc = mdbg_copyin(shellui_pid, bytes + offset, address, size);
+            if (mrc == 0)
+                return 0;
+            /* last resort, as for reads: through the kernel's physical map */
+            return kernel_proc_copyin(shellui_pid, bytes + offset, address, size) == 0 ? 0 : mrc;
+        }
+        int rc = pt_copyin(shellui_pid, bytes + offset, address, size);
+        if (rc == 0)
+            return 0;
+        /*
+         * Virtual Toy Pad (7.00-13.xx): some firmware refuses a ptrace write into the RX
+         * JIT page. Same remedy as the MDBG families above: while ShellUI is
+         * stopped make the page RWX, write, then put RX back. The caller still
+         * verifies the bytes and restores the original on any mismatch.
+         */
+        const std::uint64_t page_start =
+            static_cast<std::uint64_t>(address) & ~(kPs5CodePageSize - 1ULL);
+        const std::uint64_t page_end =
+            (static_cast<std::uint64_t>(address) + size + (kPs5CodePageSize - 1ULL)) &
+            ~(kPs5CodePageSize - 1ULL);
+        const std::size_t prot_len = static_cast<std::size_t>(page_end - page_start);
+        if (kernel_mprotect(shellui_pid, static_cast<intptr_t>(page_start), prot_len,
+                            PROT_READ | PROT_WRITE | PROT_EXEC) != 0)
+            return kernel_proc_copyin(shellui_pid, bytes + offset, address, size) == 0 ? 0 : rc;
+        rc = pt_copyin(shellui_pid, bytes + offset, address, size);
+        if (rc != 0)
+            rc = mdbg_copyin(shellui_pid, bytes + offset, address, size);
+        if (rc != 0)   /* last resort: through the kernel's physical map */
+            rc = kernel_proc_copyin(shellui_pid, bytes + offset, address, size);
+        if (kernel_mprotect(shellui_pid, static_cast<intptr_t>(page_start), prot_len,
+                            PROT_READ | PROT_EXEC) != 0)
+            return -1001;
+        return rc;
     };
 
     const pid_t self = getpid();

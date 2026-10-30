@@ -77,9 +77,15 @@ inline ShellUiHookBackend shellui_main_thread_guard_backend(
         family == 0x09000000U ||
         (family >= 0x11000000U && family <= 0x13ff0000U))
         return ShellUiHookBackend::Mdbg;
+    /*
+     * Virtual Toy Pad: 9.60 included. The renderer always tries the Application.Update
+     * chain first (with etaHEN on 9.60 that still wins, as before); this
+     * guard is only the fallback, and without it 9.60 on any other HEN had
+     * no console picker at all. Same one-byte, verified, ShellUI-stopped write as
+     * 9.05-9.40 and 10.xx. Supported span: 7.00 to 13.xx.
+     */
     if ((family >= 0x08300000U && family < 0x09000000U) ||
-        (family > 0x09000000U && family < 0x09600000U) ||
-        (family > 0x09600000U && family <= 0x13ff0000U))
+        (family > 0x09000000U && family <= 0x13ff0000U))
         return ShellUiHookBackend::PtraceIo;
     return ShellUiHookBackend::Unsupported;
 }

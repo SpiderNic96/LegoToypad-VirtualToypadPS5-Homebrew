@@ -84,6 +84,9 @@ static void notify(const char *fmt, ...) {
     sceKernelSendNotificationRequest(0, &req, sizeof req, 0);
 }
 
+/* the overlay crash-loop guard tripped (ovl_controller) */
+static void overlay_guard_notify(const char *msg) { notify("LEGO Dimensions: %s", msg); }
+
 static uint64_t now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -148,7 +151,8 @@ static void write_config(void) {
                "# Put back the figures from the last session when the game starts (1/0)\nrestore_pad=%u\n"
                "# Diagnostic capture of Characters UI (1/0; disabled by default)\ncapture_selection=%u\n"
                "# Patch the engine to target 60 FPS instead of 30 (connorh315's patch; 1/0)\nfps60=%u\n"
-               "# Internal render resolution: 1080 (game default), 1440 or 2160\nresolution=%u\n\n"
+               "# Internal render resolution: 1080 (game default), 1440 or 2160. If the game closes before the\n"
+               "# Toy Pad connects, the next start drops one step (delete res_fallback.txt to retry)\nresolution=%u\n\n"
                "# Console overlay: LegoToypad's toypad picker drawn by the PS5 system UI (1/0).\n"
                "# menu_buttons open it; with 0 (or if it cannot start) the classic text menu is used.\n"
                "overlay=%u\n"
@@ -316,6 +320,32 @@ static int verify_build(pid_t pid, intptr_t base) {
         }
     }
     return 0;
+}
+
+int kernel_dynlib_find_handle(int pid, unsigned long addr, unsigned int *handle);   /* SDK, undeclared */
+
+/* What an import slot may hold before we replace it: the function the loader bound it to, or a
+ * lazy stub / function inside a module that is really loaded in the game (the eboot itself is
+ * handle 0). Anything else - 0, the loader's not-bound-yet marker 0xeffffffe'<n>, a foreign
+ * hook in an anonymous mapping, garbage - is never overwritten. */
+static int slot_ok(pid_t pid, uint64_t v, intptr_t resolved) {
+    if (!v || (v >> 32) == 0xeffffffeu) return 0;
+    if (resolved && v == (uint64_t)resolved) return 1;
+    unsigned int h = 0;
+    return v >= 0x10000 && v < 0x800000000000ull && !kernel_dynlib_find_handle(pid, (unsigned long)v, &h);
+}
+
+/* every import we replace is resolvable in its library and its slot is bound (or a real stub) */
+static int imports_ready(pid_t pid, intptr_t base, int *missing) {
+    for (int i = 0; i < H_COUNT; i++) {
+        intptr_t want = resolve(pid, LD_IMPORTS[i].lib, LD_IMPORTS[i].nid);
+        uint64_t got = 0;
+        if (!want || kernel_proc_copyout(pid, base + LD_IMPORTS[i].got, &got, sizeof got) || !slot_ok(pid, got, want)) {
+            if (missing) *missing = i;
+            return 0;
+        }
+    }
+    return 1;
 }
 
 static int write_got(pid_t pid, intptr_t addr, uint64_t val) {
@@ -487,13 +517,46 @@ static const struct { uint32_t off; uint16_t stock; uint8_t is_w; } RES_SITES[6]
     {0x7148f8, 1920, 1}, {0x714902, 1080, 0}, {0x714edc, 1920, 1},   /* patch addresses - 0x400000 */
     {0x714ee3, 1080, 0}, {0x714f23, 1920, 1}, {0x714f28, 1080, 0}};
 
+/* Safety net for the higher resolutions. On a real console a PS4 game keeps a PS4-sized memory
+ * budget, and 4K render targets may not fit: the game then hangs during start-up and closes
+ * before it ever talks to the toy pad. Every launch above 1080 is a trial (res_trial.txt). It
+ * passes the moment the game talks to the toy pad (monitor() removes the file). If the file is
+ * still there at the next launch, that trial failed: the next lower resolution is used from then
+ * on (res_fallback.txt: "<resolution in config.ini> <cap>"). Changing resolution= in config.ini,
+ * or deleting res_fallback.txt, tries the higher one again. */
+#define RES_TRIAL DATA_DIR "/res_trial.txt"
+#define RES_CAP   DATA_DIR "/res_fallback.txt"
+
+static unsigned res_lower(unsigned r) { return r > 1440 ? 1440 : 1080; }
+
+static unsigned res_effective(void) {
+    unsigned want = cfg.resolution, trial = 0, req = 0, cap = 0;
+    FILE *f = fopen(RES_TRIAL, "r");
+    if (f) { if (fscanf(f, "%u", &trial) != 1) trial = 0; fclose(f); remove(RES_TRIAL); }
+    if (trial > 1080) {   /* the last launch at `trial` never reached the toy pad */
+        cap = res_lower(trial);
+        if ((f = fopen(RES_CAP, "w"))) { fprintf(f, "%u %u\n", cfg.resolution, cap); fclose(f); }
+        LOG("resolution: the last start at %up closed before the toy pad connected; using %up from now on", trial, cap);
+        notify("LEGO Dimensions closed before the Toy Pad connected at %up.\nUsing %up from now on (delete %s to try %up again).",
+               trial, cap, RES_CAP, trial);
+    }
+    if ((f = fopen(RES_CAP, "r"))) {
+        if (fscanf(f, "%u %u", &req, &cap) != 2) req = cap = 0;
+        fclose(f);
+        if (req != cfg.resolution) { remove(RES_CAP); cap = 0; }   /* config.ini changed: try what it says */
+    } else cap = 0;
+    if (cap && want > cap) { LOG("resolution: %u did not start before, using %u (delete %s to retry)", want, cap, RES_CAP); want = cap; }
+    return want;
+}
+
 static void apply_resolution(pid_t pid, intptr_t base) {
     uint16_t w, h;
-    switch (cfg.resolution) {
+    unsigned res = res_effective();
+    switch (res) {
     case 1080: LOG("resolution: game default (1920x1080)"); return;
     case 1440: w = 2560; h = 1440; break;
     case 2160: w = 3840; h = 2160; break;
-    default: LOG("resolution=%u not supported (use 1080, 1440 or 2160); keeping default", cfg.resolution); return;
+    default: LOG("resolution=%u not supported (use 1080, 1440 or 2160); keeping default", res); return;
     }
     uint16_t cur[6];
     for (int i = 0; i < 6; i++) {
@@ -513,6 +576,8 @@ static void apply_resolution(pid_t pid, intptr_t base) {
         }
     }
     LOG("resolution: internal render set to %ux%u", w, h);
+    FILE *tf = fopen(RES_TRIAL, "w");   /* passes once the game talks to the toy pad */
+    if (tf) { fprintf(tf, "%u\n", res); fclose(tf); }
 }
 
 static int install_render_hook(pid_t pid, intptr_t base, intptr_t target) {
@@ -678,13 +743,24 @@ static intptr_t inject(pid_t pid, intptr_t base) {
             else LOG("Characters selection diagnostic capture enabled");
         }
     }
-    pt_detach(pid, 0);
-    if (!ok) { LOG("aborting: blob is not executable in the game process (game left untouched)"); free(img); return 0; }
+    if (!ok) { pt_detach(pid, 0); LOG("aborting: blob is not executable in the game process (game left untouched)"); free(img); return 0; }
 
-    /* redirect the imports */
-    for (int i = 0; i < H_COUNT; i++)
-        if (write_got(pid, base + LD_IMPORTS[i].got, mem + h->hook_off[i]))
-            LOG("GOT patch failed for %s", LD_IMPORTS[i].name);
+    /* redirect the imports while the game is still stopped: it never runs with half of its USB
+     * calls hooked. Each slot is read again first and only replaced if it holds what the loader
+     * put there (a slot that does not is left alone and logged) */
+    int patched = 0, skipped = 0;
+    for (int i = 0; i < H_COUNT; i++) {
+        uint64_t cur = 0;
+        if (kernel_proc_copyout(pid, base + LD_IMPORTS[i].got, &cur, sizeof cur) || !slot_ok(pid, cur, (intptr_t)h->orig[i])) {
+            LOG("not hooking %s (slot holds 0x%lx)", LD_IMPORTS[i].name, (long)cur);
+            skipped++;
+            continue;
+        }
+        if (write_got(pid, base + LD_IMPORTS[i].got, mem + h->hook_off[i])) LOG("GOT patch failed for %s", LD_IMPORTS[i].name);
+        else patched++;
+    }
+    pt_detach(pid, 0);
+    LOG("hooked %d import slots (%d skipped)", patched, skipped);
     free(img);
     return mem;
 }
@@ -752,6 +828,7 @@ static void monitor(pid_t pid, intptr_t mem, intptr_t base) {
         if (!reported && s.usb_cmds > 0) {
             reported = 1;
             LOG("game is talking to the virtual Toy Pad (fake_opened=%u)", s.fake_opened);
+            if (!remove(RES_TRIAL)) LOG("resolution: this resolution starts fine");
             notify("Virtual Toy Pad connected!\nPress %s to open the menu.", cfg.combo_txt);
         }
         if (s.passthrough && !last_cmds) { LOG("real Toy Pad detected: emulation disabled"); last_cmds = 1; }
@@ -857,6 +934,7 @@ int main(void) {
                          (int)cfg.background, (int)cfg.opacity, (int)cfg.pad_skin, (int)cfg.ui_size,
                          (int)cfg.text_size, (int)cfg.led_style};
         cui_configure(&cc);
+        ovl_ctl_set_guard(DATA_DIR "/overlay_guard.txt", overlay_guard_notify);
         ovl_ctl_enable((int)cfg.overlay);
         if (cfg.overlay) cui_start();
     }
@@ -882,13 +960,28 @@ int main(void) {
         apply_fps60(pid, base);
         apply_resolution(pid, base);
 #endif
-        /* wait for the dynamic linker to bind the imports we are going to replace */
-        for (int i = 0; i < 200; i++) {
-            uint64_t got = 0;
-            intptr_t want = resolve(pid, LD_IMPORTS[H_GetDeviceList].lib, LD_IMPORTS[H_GetDeviceList].nid);
-            kernel_proc_copyout(pid, base + LD_IMPORTS[H_GetDeviceList].got, &got, sizeof got);
-            if (want && (got == (uint64_t)want || find_existing(pid, base))) break;
-            usleep(50 * 1000);
+        /* wait for the game's USB library and for the dynamic linker to bind the imports we are
+         * going to replace. On a cold start libSceUsbd loads a little after the eboot: keep
+         * waiting (up to 90 s) instead of giving up after 10 s and asking for a game restart */
+        int ready = 0, missing = -1, gdl_ok = 0;
+        for (int i = 0; i < 450 && proc_alive_fast(pid); i++) {
+            if (find_existing(pid, base) || imports_ready(pid, base, &missing)) { ready = 1; break; }
+            /* the entry point bound but some other import still is not after 5 s: go ahead, that
+             * slot is skipped (and logged) rather than holding the whole toy pad back */
+            uint64_t g = 0;
+            intptr_t gw = resolve(pid, LD_IMPORTS[H_GetDeviceList].lib, LD_IMPORTS[H_GetDeviceList].nid);
+            kernel_proc_copyout(pid, base + LD_IMPORTS[H_GetDeviceList].got, &g, sizeof g);
+            gdl_ok = gw && slot_ok(pid, g, gw) ? gdl_ok + 1 : 0;
+            if (gdl_ok >= 25) { LOG("%s still not bound after 5 s: injecting without it", missing >= 0 ? LD_IMPORTS[missing].name : "?"); ready = 1; break; }
+            if (i == 10) LOG("waiting for the game to load its USB library (%s not bound yet)", missing >= 0 ? LD_IMPORTS[missing].name : "?");
+            usleep(200 * 1000);
+        }
+        if (!proc_alive_fast(pid)) { LOG("game exited while starting"); continue; }
+        if (!ready) {
+            LOG("the game's USB imports never became ready (%s): not injecting", missing >= 0 ? LD_IMPORTS[missing].name : "?");
+            notify("LEGO Dimensions: the game did not load its USB library - Virtual Toy Pad not started (see %s).", LOG_FILE);
+            while (proc_alive(pid)) sleep(1);
+            continue;
         }
 #ifdef PROBE_ONLY
         LOG("PROBE: base=0x%lx build verified", (long)base);
@@ -918,7 +1011,7 @@ int main(void) {
             intptr_t original = resolve(pid, LD_IMPORTS[H_GetDeviceList].lib,
                                         LD_IMPORTS[H_GetDeviceList].nid);
             kernel_proc_copyout(pid, base + LD_IMPORTS[H_GetDeviceList].got, &got, sizeof got);
-            if (!original || got != (uint64_t)original) {
+            if (!original || !slot_ok(pid, got, original)) {   /* hooked by something else (or an older build) */
                 LOG("USB GOT already modified or unresolved (0x%lx != 0x%lx); refusing duplicate injection",
                     (long)got, (long)original);
                 notify("LEGO Dimensions: restart game before changing Virtual Toy Pad versions.");

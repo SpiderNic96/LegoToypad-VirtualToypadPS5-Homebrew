@@ -1,3 +1,49 @@
+# 2.0.4 — No more system-software crash loop (SpiderNic96)
+
+- **Crash-loop guard for the console picker.** On a 7.20 console the picker crashed SceShellUI
+  ("Something went wrong with the system software… Please wait"). The payload then loaded it
+  again into the restarted ShellUI, which crashed again, endlessly.
+  - Now, if ShellUI restarts within 3 minutes of the picker being loaded into it, the picker
+    stays off until the next reboot. A notification says so.
+  - The toy pad, the phone remote and the in-game classic menu keep working.
+  - The guard is remembered in `/data/ldmod/overlay_guard.txt` for that boot, so sending the
+    payload again doesn't restart the loop. After a reboot the picker is tried once more;
+    `overlay=0` in `config.ini` turns it off for good.
+
+# 2.0.3 — Resolution safety net (SpiderNic96)
+
+- **A resolution that crashes falls back by itself.** On a real console a PS4 game keeps its PS4
+  memory budget, and 4K render targets may not fit: at `resolution=2160` the game hung during
+  start-up and closed before the toy pad connected. Every start above 1080 is now a trial:
+  - It passes once the game talks to the toy pad.
+  - If the game closes (or the PS5 goes down) before that, the next start uses one step lower
+    (2160 → 1440 → 1080), with a notification.
+  - The cap is kept in `/data/ldmod/res_fallback.txt`. Delete it, or change `resolution=` in
+    `config.ini`, to try the higher one again.
+
+# 2.0.2 — Console picker on firmware 10.xx (SpiderNic96)
+
+- **Console picker now starts where ShellUI's code can't be read through ptrace.** A 10.40 log
+  showed every startup probe failing with EFAULT (`status=-5 read=14`), so the picker never came
+  up and ShellUI later restarted. Reads and writes of ShellUI's code now fall back to the kernel's
+  physical-memory map. The bytes are still checked before and after each write, and the original
+  is put back on any mismatch.
+
+# 2.0.1 — Firmware 7.00–13.60, safer hooking (SpiderNic96)
+
+- **Console picker on firmware 7.00–13.60.** 9.60 without etaHEN now uses the background render
+  mode instead of having no picker. On firmware that refuses a ptrace write into ShellUI's code
+  page, the patch is retried by briefly unlocking the page (as 13.60 already did). The bytes are
+  still verified, and the original is put back on any mismatch. A host test checks every firmware
+  from 7.00 to 13.60 has a way in.
+- **Cold start:** the payload now waits up to 90 s for the game to load its USB library, instead
+  of giving up after 10 s with "restart the game".
+- **Safer hooking:**
+  - Import slots are only replaced if they hold what the loader put there (the bound function,
+    or a stub inside a loaded module). The loader's not-bound-yet marker, a foreign hook or
+    garbage is never overwritten, and is logged as `not hooking …`.
+  - The game stays paused while its slots are rewritten.
+
 # 2.0.0 — Console picker, phone remote, EU 1.24, 60 FPS and resolution (SpiderNic96)
 
 - **EU CUSA01176 v1.24** support alongside US CUSA00935 v1.23 (code layout detected at start).
