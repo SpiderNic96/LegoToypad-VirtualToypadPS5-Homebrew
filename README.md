@@ -50,7 +50,7 @@ Built on top of **HeitorSpectre's [Virtual Toy Pad](https://github.com/HeitorSpe
 |---|---|
 | **Game** | LEGO Dimensions (PS4), **EU CUSA01176 update 1.24** or **US CUSA00935 update 1.23** |
 | **Install type** | Disc + update, PKG or fPKG — anything that runs those exact versions. The payload checks the game's code before patching and refuses other versions (a disc without its update is v1.00). |
-| **Console** | Jailbroken PS5 with an ELF loader (etaHEN, elfldr...). Developed on firmware 13.60 (kstuff lite, etaHEN, ShadowMountPlus). |
+| **Console** | Jailbroken PS5 on **7.00 to 13.60** with an ELF loader (etaHEN, elfldr...). Developed on firmware 13.60 (kstuff lite, etaHEN, ShadowMountPlus). The console picker hooks ShellUI's frame update on 7.00–8.20 and 11.00–13.60 (and on 9.60 with etaHEN), and uses its own render thread on 8.40–8.60, 9.00–9.60 and 10.xx. Only 13.60 has been run on a console. On a firmware where ShellUI can't be patched safely it puts the original bytes back: you get no console picker, and the phone remote still works. |
 | **Phone** | Any phone browser on the same network |
 
 The console picker draws itself inside SceShellUI. **Don't run another ShellUI overlay at the same

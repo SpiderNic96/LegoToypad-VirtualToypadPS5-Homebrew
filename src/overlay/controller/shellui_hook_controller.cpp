@@ -226,7 +226,31 @@ ShellUiHookPollResult poll_and_apply_shellui_hook(
 
         if (backend == ShellUiHookBackend::Mdbg)
             return mdbg_copyin(shellui_pid, bytes + offset, address, size);
-        return pt_copyin(shellui_pid, bytes + offset, address, size);
+        int rc = pt_copyin(shellui_pid, bytes + offset, address, size);
+        if (rc == 0)
+            return 0;
+        /*
+         * Virtual Toy Pad (7.00-13.xx): some firmware refuses a ptrace write into the RX
+         * JIT page. Same remedy as the MDBG families above: while ShellUI is
+         * stopped make the page RWX, write, then put RX back. The caller still
+         * verifies the bytes and restores the original on any mismatch.
+         */
+        const std::uint64_t page_start =
+            static_cast<std::uint64_t>(address) & ~(kPs5CodePageSize - 1ULL);
+        const std::uint64_t page_end =
+            (static_cast<std::uint64_t>(address) + size + (kPs5CodePageSize - 1ULL)) &
+            ~(kPs5CodePageSize - 1ULL);
+        const std::size_t prot_len = static_cast<std::size_t>(page_end - page_start);
+        if (kernel_mprotect(shellui_pid, static_cast<intptr_t>(page_start), prot_len,
+                            PROT_READ | PROT_WRITE | PROT_EXEC) != 0)
+            return rc;
+        rc = pt_copyin(shellui_pid, bytes + offset, address, size);
+        if (rc != 0)
+            rc = mdbg_copyin(shellui_pid, bytes + offset, address, size);
+        if (kernel_mprotect(shellui_pid, static_cast<intptr_t>(page_start), prot_len,
+                            PROT_READ | PROT_EXEC) != 0)
+            return -1001;
+        return rc;
     };
 
     const pid_t self = getpid();

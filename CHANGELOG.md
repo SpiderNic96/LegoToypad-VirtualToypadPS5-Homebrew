@@ -1,3 +1,18 @@
+# 2.0.1 — Firmware 7.00–13.60, safer hooking (SpiderNic96)
+
+- **Console picker on firmware 7.00–13.60.** 9.60 without etaHEN now uses the background render
+  mode instead of having no picker. On firmware that refuses a ptrace write into ShellUI's code
+  page, the patch is retried by briefly unlocking the page (as 13.60 already did). The bytes are
+  still verified, and the original is put back on any mismatch. A host test checks every firmware
+  from 7.00 to 13.60 has a way in.
+- **Cold start:** the payload now waits up to 90 s for the game to load its USB library, instead
+  of giving up after 10 s with "restart the game".
+- **Safer hooking:**
+  - Import slots are only replaced if they hold what the loader put there (the bound function,
+    or a stub inside a loaded module). The loader's not-bound-yet marker, a foreign hook or
+    garbage is never overwritten, and is logged as `not hooking …`.
+  - The game stays paused while its slots are rewritten.
+
 # 2.0.0 — Console picker, phone remote, EU 1.24, 60 FPS and resolution (SpiderNic96)
 
 - **EU CUSA01176 v1.24** support alongside US CUSA00935 v1.23 (code layout detected at start).

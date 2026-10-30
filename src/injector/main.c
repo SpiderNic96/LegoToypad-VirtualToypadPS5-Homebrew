@@ -318,6 +318,32 @@ static int verify_build(pid_t pid, intptr_t base) {
     return 0;
 }
 
+int kernel_dynlib_find_handle(int pid, unsigned long addr, unsigned int *handle);   /* SDK, undeclared */
+
+/* What an import slot may hold before we replace it: the function the loader bound it to, or a
+ * lazy stub / function inside a module that is really loaded in the game (the eboot itself is
+ * handle 0). Anything else - 0, the loader's not-bound-yet marker 0xeffffffe'<n>, a foreign
+ * hook in an anonymous mapping, garbage - is never overwritten. */
+static int slot_ok(pid_t pid, uint64_t v, intptr_t resolved) {
+    if (!v || (v >> 32) == 0xeffffffeu) return 0;
+    if (resolved && v == (uint64_t)resolved) return 1;
+    unsigned int h = 0;
+    return v >= 0x10000 && v < 0x800000000000ull && !kernel_dynlib_find_handle(pid, (unsigned long)v, &h);
+}
+
+/* every import we replace is resolvable in its library and its slot is bound (or a real stub) */
+static int imports_ready(pid_t pid, intptr_t base, int *missing) {
+    for (int i = 0; i < H_COUNT; i++) {
+        intptr_t want = resolve(pid, LD_IMPORTS[i].lib, LD_IMPORTS[i].nid);
+        uint64_t got = 0;
+        if (!want || kernel_proc_copyout(pid, base + LD_IMPORTS[i].got, &got, sizeof got) || !slot_ok(pid, got, want)) {
+            if (missing) *missing = i;
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int write_got(pid_t pid, intptr_t addr, uint64_t val) {
     intptr_t page = addr & ~0x3FFFL;
     int prot = kernel_get_vmem_protection(pid, page, 0x4000);
@@ -678,13 +704,24 @@ static intptr_t inject(pid_t pid, intptr_t base) {
             else LOG("Characters selection diagnostic capture enabled");
         }
     }
-    pt_detach(pid, 0);
-    if (!ok) { LOG("aborting: blob is not executable in the game process (game left untouched)"); free(img); return 0; }
+    if (!ok) { pt_detach(pid, 0); LOG("aborting: blob is not executable in the game process (game left untouched)"); free(img); return 0; }
 
-    /* redirect the imports */
-    for (int i = 0; i < H_COUNT; i++)
-        if (write_got(pid, base + LD_IMPORTS[i].got, mem + h->hook_off[i]))
-            LOG("GOT patch failed for %s", LD_IMPORTS[i].name);
+    /* redirect the imports while the game is still stopped: it never runs with half of its USB
+     * calls hooked. Each slot is read again first and only replaced if it holds what the loader
+     * put there (a slot that does not is left alone and logged) */
+    int patched = 0, skipped = 0;
+    for (int i = 0; i < H_COUNT; i++) {
+        uint64_t cur = 0;
+        if (kernel_proc_copyout(pid, base + LD_IMPORTS[i].got, &cur, sizeof cur) || !slot_ok(pid, cur, (intptr_t)h->orig[i])) {
+            LOG("not hooking %s (slot holds 0x%lx)", LD_IMPORTS[i].name, (long)cur);
+            skipped++;
+            continue;
+        }
+        if (write_got(pid, base + LD_IMPORTS[i].got, mem + h->hook_off[i])) LOG("GOT patch failed for %s", LD_IMPORTS[i].name);
+        else patched++;
+    }
+    pt_detach(pid, 0);
+    LOG("hooked %d import slots (%d skipped)", patched, skipped);
     free(img);
     return mem;
 }
@@ -882,13 +919,28 @@ int main(void) {
         apply_fps60(pid, base);
         apply_resolution(pid, base);
 #endif
-        /* wait for the dynamic linker to bind the imports we are going to replace */
-        for (int i = 0; i < 200; i++) {
-            uint64_t got = 0;
-            intptr_t want = resolve(pid, LD_IMPORTS[H_GetDeviceList].lib, LD_IMPORTS[H_GetDeviceList].nid);
-            kernel_proc_copyout(pid, base + LD_IMPORTS[H_GetDeviceList].got, &got, sizeof got);
-            if (want && (got == (uint64_t)want || find_existing(pid, base))) break;
-            usleep(50 * 1000);
+        /* wait for the game's USB library and for the dynamic linker to bind the imports we are
+         * going to replace. On a cold start libSceUsbd loads a little after the eboot: keep
+         * waiting (up to 90 s) instead of giving up after 10 s and asking for a game restart */
+        int ready = 0, missing = -1, gdl_ok = 0;
+        for (int i = 0; i < 450 && proc_alive_fast(pid); i++) {
+            if (find_existing(pid, base) || imports_ready(pid, base, &missing)) { ready = 1; break; }
+            /* the entry point bound but some other import still is not after 5 s: go ahead, that
+             * slot is skipped (and logged) rather than holding the whole toy pad back */
+            uint64_t g = 0;
+            intptr_t gw = resolve(pid, LD_IMPORTS[H_GetDeviceList].lib, LD_IMPORTS[H_GetDeviceList].nid);
+            kernel_proc_copyout(pid, base + LD_IMPORTS[H_GetDeviceList].got, &g, sizeof g);
+            gdl_ok = gw && slot_ok(pid, g, gw) ? gdl_ok + 1 : 0;
+            if (gdl_ok >= 25) { LOG("%s still not bound after 5 s: injecting without it", missing >= 0 ? LD_IMPORTS[missing].name : "?"); ready = 1; break; }
+            if (i == 10) LOG("waiting for the game to load its USB library (%s not bound yet)", missing >= 0 ? LD_IMPORTS[missing].name : "?");
+            usleep(200 * 1000);
+        }
+        if (!proc_alive_fast(pid)) { LOG("game exited while starting"); continue; }
+        if (!ready) {
+            LOG("the game's USB imports never became ready (%s): not injecting", missing >= 0 ? LD_IMPORTS[missing].name : "?");
+            notify("LEGO Dimensions: the game did not load its USB library - Virtual Toy Pad not started (see %s).", LOG_FILE);
+            while (proc_alive(pid)) sleep(1);
+            continue;
         }
 #ifdef PROBE_ONLY
         LOG("PROBE: base=0x%lx build verified", (long)base);
@@ -918,7 +970,7 @@ int main(void) {
             intptr_t original = resolve(pid, LD_IMPORTS[H_GetDeviceList].lib,
                                         LD_IMPORTS[H_GetDeviceList].nid);
             kernel_proc_copyout(pid, base + LD_IMPORTS[H_GetDeviceList].got, &got, sizeof got);
-            if (!original || got != (uint64_t)original) {
+            if (!original || !slot_ok(pid, got, original)) {   /* hooked by something else (or an older build) */
                 LOG("USB GOT already modified or unresolved (0x%lx != 0x%lx); refusing duplicate injection",
                     (long)got, (long)original);
                 notify("LEGO Dimensions: restart game before changing Virtual Toy Pad versions.");
