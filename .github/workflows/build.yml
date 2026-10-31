@@ -1,13 +1,22 @@
-name: Build VirtualToyPad
+name: Build release folder
 
 on:
-  workflow_dispatch:        # lets you press "Run workflow" by hand
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version to publish as a GitHub release, e.g. v2.1.0 (leave empty to only build)"
+        required: false
+        default: ""
   push:
     branches: [main]
     paths-ignore: ['**.md']
+    tags: ['v*']            # pushing a tag like v2.1.0 also publishes a release
 
 permissions:
-  contents: read
+  contents: write           # needed to create the release
+
+env:
+  VER: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name) || 'dev' }}
 
 jobs:
   build:
@@ -18,26 +27,47 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang lld make xxd unzip wget python3-pyelftools
+          sudo apt-get install -y clang lld make xxd unzip zip wget \
+            python3-pyelftools python3-pil python3-numpy python3-fonttools python3-brotli
 
       - name: Install PS5 Payload SDK
         run: |
           wget -q https://github.com/ps5-payload-dev/sdk/releases/latest/download/ps5-payload-sdk.zip
           sudo unzip -q ps5-payload-sdk.zip -d /opt
 
-      - name: Build
+      - name: Build the payload
         env:
           PS5_PAYLOAD_SDK: /opt/ps5-payload-sdk
         run: bash build.sh
 
-      - name: Package
+      - name: Build the web folder (phone app, picker art, sounds) from LegoToypad
         run: |
-          mkdir -p out/data/ldmod
-          cp build/ldinject.elf out/VirtualToyPad.elf
-          if [ -d sfx ]; then cp -r sfx out/data/ldmod/sfx; fi
-          ls -R out
+          git clone --depth 1 https://github.com/harrysof/LegoToypad
+          bash tools/make_web_bundle.sh LegoToypad
+
+      - name: Assemble the release folder and zip
+        run: |
+          name="LegoDimensions-PS5-VirtualToyPad-$VER"
+          out="release/$name"
+          mkdir -p "$out/data/ldmod"
+          cp build/ldinject.elf "$out/VirtualToyPad.elf"
+          cp -r build/web "$out/data/ldmod/web"
+          cp -r COPYING THIRD_PARTY_NOTICES.md licenses README.md "$out/"
+          cp licenses/Inter-OFL.txt "$out/data/ldmod/web/LICENSE-Inter-OFL.txt"
+          (cd release && zip -qr "../$name.zip" "$name")
+          du -sh "$out" "$name.zip"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: VirtualToyPad
-          path: out
+          name: VirtualToyPad-release
+          path: release
+
+      - name: Publish the GitHub release
+        if: env.VER != 'dev'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VER }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ env.VER }}
+          generate_release_notes: true
+          files: LegoDimensions-PS5-VirtualToyPad-${{ env.VER }}.zip
