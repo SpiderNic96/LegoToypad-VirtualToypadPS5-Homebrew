@@ -37,7 +37,8 @@ static void sfx_note(const char *fmt, ...) {
     sceKernelSendNotificationRequest(0, &req, sizeof req, 0);
 }
 
-#define SFX_DIR  "/data/ldmod/sfx/"
+/* the release ships the sounds in the web folder; /data/ldmod/sfx/ is also accepted */
+static const char *SFX_DIRS[] = {"/data/ldmod/web/sfx/", "/data/ldmod/sfx/"};
 #define RATE     48000
 #define MAX_SECS 10
 
@@ -152,12 +153,15 @@ static void *sfx_thread(void *arg) {
     (void)arg;
     int loaded = 0;
     for (int i = 0; i < SFX_COUNT; i++) {
-        char path[96];
-        for (int n = 0; n < 2; n++) {
-            snprintf(path, sizeof path, SFX_DIR "%s", NAMES[i][n]);
-            int rc = load_wav(path, &g_snd[i]);
-            if (!rc) { loaded++; break; }
-            if (rc != -1) { SLOG("%s: unsupported or bad WAV (%d)", path, rc); break; }
+        int done = 0;
+        for (unsigned d = 0; d < sizeof SFX_DIRS / sizeof SFX_DIRS[0] && !done; d++) {
+            for (int n = 0; n < 2 && !done; n++) {
+                char path[96];
+                snprintf(path, sizeof path, "%s%s", SFX_DIRS[d], NAMES[i][n]);
+                int rc = load_wav(path, &g_snd[i]);
+                if (!rc) { loaded++; done = 1; }
+                else if (rc != -1) { SLOG("%s: unsupported or bad WAV (%d)", path, rc); done = 1; }
+            }
         }
     }
     SLOG("%d sound file(s) loaded", loaded);

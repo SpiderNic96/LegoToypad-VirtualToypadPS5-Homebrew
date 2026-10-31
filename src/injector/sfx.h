@@ -1,6 +1,6 @@
 /* UI sound effects for the console picker (port of LegoToypad's Assets/SFX).
  *
- * The payload decodes /data/ldmod/sfx/{Navigate,Select,Move,Remove}.wav once and hands the PCM to the
+ * The payload decodes {Navigate,Select,Move,Remove}.wav from /data/ldmod/web/sfx/ once and hands the PCM to the
  * overlay renderer inside SceShellUI (which owns the PS5 audio stack); the renderer plays it.
  * Missing files are simply silent. Volume (0-100) is the "Sound volume" row in the picker's Settings
  * and sfx_volume= in config.ini. */
