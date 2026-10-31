@@ -55,9 +55,9 @@ void web_log(const char *fmt, ...);
 #define UI_DIR "/data/ldmod/web/ui"
 #endif
 
-static cui_config C = {1, 0x100, 2, 1, 0, 0x2 | 0x4, 0, 92, 0, 0, 0, 0};
+static cui_config C = {1, 0x100, 2, 1, 0, 0x2 | 0x4, 0, 92, 0, 0, 0, 0, 70};
 
-void cui_configure(const cui_config *c) { C = *c; }
+void cui_configure(const cui_config *c) { C = *c; sfx_set_volume(C.sfx_volume); }
 
 /* LegoToypad's 900x610 window, centred on the 1920x1080 canvas. K is canvas px per window unit:
  * 1.5 at "UI size 100%"; FONT_MUL scales every label (UI size x Text size). */
@@ -249,6 +249,7 @@ static int link_open(void) {
     ovl_config cfg = {(uint32_t)C.tex_mode, {0, 0, 0}};
     send_msg2(OVL_CONFIG, &cfg, sizeof cfg, 0, 0);
     reset_sent_state();
+    sfx_link_up(hello.pid, send_msg2);
     return 0;
 }
 
@@ -264,7 +265,7 @@ static void link_poll(void) {
         char body[4097];
         if (h.len && recv_full(g_fd, body, h.len, 1000)) { link_close("bad read"); return; }
         body[h.len] = 0;
-        if (h.type == OVL_STATUS) LOGC("renderer: %s", body);
+        if (h.type == OVL_STATUS) { LOGC("renderer: %s", body); sfx_status(body); }
     }
 }
 
@@ -970,7 +971,7 @@ static void toggle_favorite(int e) {
  * mean something on a PS5: a categorised list, headings skipped by the focus, Left/Right walk a
  * value, Cross also runs the one-shot actions. Changes are saved to config.ini at once. */
 enum { SA_HEADING, SA_BACKGROUND, SA_PADSKIN, SA_LEDSTYLE, SA_OPACITY, SA_UISIZE, SA_TEXTSIZE, SA_PEEK, SA_LEDS,
-       SA_FASTLOAD, SA_WEB, SA_CLEARALL, SA_RESET };
+       SA_FASTLOAD, SA_SFXVOL, SA_WEB, SA_CLEARALL, SA_RESET };
 enum { TONE_NEUTRAL, TONE_ON, TONE_OFF };
 typedef struct { int action; const char *label; char value[64]; int tone; } srow_t;
 #define SET_MAX 20
@@ -1076,6 +1077,8 @@ static int build_settings(srow_t *r) {
     ROW(SA_LEDS, "Toypad LEDs", vtp_led_mirror() ? TONE_ON : TONE_OFF, "%s", vtp_led_mirror() ? "On" : "Off");
     HEAD("Controls");
     ROW(SA_FASTLOAD, "Fast loading", C.fast_load ? TONE_ON : TONE_OFF, "%s", C.fast_load ? "On" : "Off");
+    if (C.sfx_volume > 0) ROW(SA_SFXVOL, "Sound volume", TONE_ON, "%d%%", C.sfx_volume);
+    else ROW(SA_SFXVOL, "Sound volume", TONE_OFF, "%s", "Off");
     HEAD("System");
     web_url();
     ROW(SA_WEB, "Web remote", TONE_ON, "%s", g_web_url);
@@ -1138,13 +1141,21 @@ static void settings_adjust(int dir, int allow_action) {
     case SA_PEEK: C.peek_size = (C.peek_size + step + 4) % 4; break;
     case SA_LEDS: vtp_led_mirror_set(!vtp_led_mirror()); return;   /* stored by the web remote */
     case SA_FASTLOAD: C.fast_load = !C.fast_load; break;
+    case SA_SFXVOL:   /* +/-10 clamped, never wraps; plays a sound so you hear the new level */
+        C.sfx_volume += step * 10;
+        if (C.sfx_volume < 0) C.sfx_volume = 0;
+        if (C.sfx_volume > 100) C.sfx_volume = 100;
+        sfx_set_volume(C.sfx_volume);
+        sfx_play(SFX_NAVIGATE);
+        break;
     case SA_CLEARALL:
         if (allow_action && act_start(ACT_CLEARALL, 0, 0)) set_status(1, "Clearing all pads...");
         return;
     case SA_RESET:
         if (!allow_action) return;
         C.background = 0; C.opacity = 92; C.pad_skin = 0; C.peek_size = 2; C.fast_load = 1;
-        C.ui_size = 0; C.text_size = 0; C.led_style = 0;
+        C.ui_size = 0; C.text_size = 0; C.led_style = 0; C.sfx_volume = 70;
+        sfx_set_volume(C.sfx_volume);
         vtp_led_mirror_set(1);
         set_status(0, "Settings reset to defaults.");
         break;

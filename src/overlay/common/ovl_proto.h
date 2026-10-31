@@ -23,6 +23,10 @@ enum {
     OVL_STATUS  = 7,   /* r->i  text (renderer log line worth surfacing) */
     OVL_PING    = 8,   /* both  empty */
     OVL_CONFIG  = 9,   /* i->r  ovl_config */
+    OVL_AUDIO   = 10,  /* i->r  ovl_audio: addresses of libSceAudioOut functions inside SceShellUI */
+    OVL_SNDDATA = 11,  /* i->r  u32 id, then 48 kHz stereo s16 PCM */
+    OVL_SNDPLAY = 12,  /* i->r  u32 id */
+    OVL_SNDVOL  = 13,  /* i->r  u32 percent 0..100 */
 };
 
 enum { OVL_W_IMAGE = 1, OVL_W_PANEL = 2, OVL_W_LABEL = 3 };
@@ -51,6 +55,7 @@ enum {
 typedef struct { uint32_t magic; uint16_t type; uint16_t version; uint32_t len; } ovl_msg;
 typedef struct { uint32_t caps; float scene_w, scene_h; int32_t pid; uint32_t textures, widgets; } ovl_hello;
 typedef struct { uint32_t tex_mode; uint32_t reserved[3]; } ovl_config;   /* 0 auto, 1 pixels, 2 files */
+typedef struct { uint64_t init, open, output; uint32_t flags; uint32_t reserved; } ovl_audio;   /* only open/output are used */
 #pragma pack(pop)
 
 #define OVL_MAX_WIDGETS 512

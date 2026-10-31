@@ -29,7 +29,7 @@ ovl_renderer.c:
 
 $(OBJ)/main.o: main.c blob.h offsets.h ../hook/ldhook.h cui.h webremote.h
 $(OBJ)/webremote.o: webremote.c webremote.h vtp_api.h ../hook/ldhook.h
-$(OBJ)/sfx.o: sfx.c sfx.h
+$(OBJ)/sfx.o: sfx.c sfx.h $(OVL)/common/ovl_proto.h
 $(OBJ)/cui.o: cui.c cui.h sfx.h vtp_api.h $(OVL)/common/ovl_proto.h
 
 $(OBJ)/%.o: %.c

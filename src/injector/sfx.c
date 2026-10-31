@@ -1,10 +1,11 @@
 /* UI sound effects for the console picker.
  *
- * Uses the PS5's libSceAudioOut, loaded at runtime (so the payload still links and runs if the
- * library or an audio port is unavailable: the picker just stays silent). WAV files are read from
- * /data/ldmod/sfx/, converted to 48 kHz stereo 16-bit once at start, and played from a worker
- * thread one 256-frame grain at a time, so a new sound can cut the old one instantly.
- */
+ * A payload process cannot use the PS5 audio stack (sceAudioOutInit never returns there), but SceShellUI
+ * can, and the overlay renderer already lives inside it. So this file only
+ *   1. decodes the WAV files from /data/ldmod/sfx/ once (to 48 kHz stereo 16-bit),
+ *   2. resolves the libSceAudioOut function addresses inside SceShellUI and tells the renderer,
+ *   3. uploads the PCM and sends tiny "play N" / "volume N" messages over the overlay link.
+ * The renderer (src/overlay/renderer/vtp_shellui.cpp) opens the audio port and mixes. */
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -13,12 +14,16 @@
 #include <pthread.h>
 #include <unistd.h>
 
+#include <ps5/kernel.h>
+#include <ps5/nid.h>
+
 #include "sfx.h"
+#include "../overlay/common/ovl_proto.h"
 
 void web_log(const char *fmt, ...);
 #define SLOG(...) web_log("sfx: " __VA_ARGS__)
 
-/* on-screen PS5 notification, so the result is visible without reading the log */
+/* on-screen PS5 notification, used only when something goes wrong */
 typedef struct { char useless1[45]; char message[3075]; } sfx_notify_t;
 int sceKernelSendNotificationRequest(int, sfx_notify_t *, size_t, int);
 static void sfx_note(const char *fmt, ...) {
@@ -32,19 +37,9 @@ static void sfx_note(const char *fmt, ...) {
     sceKernelSendNotificationRequest(0, &req, sizeof req, 0);
 }
 
-/* libkernel: weak so the link cannot fail; checked for NULL at run time */
-int sceKernelLoadStartModule(const char *name, size_t argc, const void *argv, unsigned flags,
-                             const void *opt, int *res) __attribute__((weak));
-int sceKernelDlsym(int handle, const char *symbol, void **addr) __attribute__((weak));
-
-typedef int (*audio_init_fn)(void);
-typedef int (*audio_open_fn)(int user, int type, int index, uint32_t len, uint32_t freq, uint32_t param);
-typedef int (*audio_output_fn)(int handle, const void *buf);
-
-#define SFX_DIR   "/data/ldmod/sfx/"
-#define RATE      48000
-#define GRAIN     256            /* frames per sceAudioOutOutput call (~5 ms) */
-#define MAX_SECS  10
+#define SFX_DIR  "/data/ldmod/sfx/"
+#define RATE     48000
+#define MAX_SECS 10
 
 static const char *NAMES[SFX_COUNT][2] = {
     {"Navigate.wav", "navigate.wav"}, {"Select.wav", "select.wav"},
@@ -52,16 +47,16 @@ static const char *NAMES[SFX_COUNT][2] = {
 
 typedef struct { int16_t *pcm; uint32_t frames; } sound_t;   /* interleaved stereo */
 static sound_t g_snd[SFX_COUNT];
-static volatile int g_ready;
+
+static int g_pid, g_need_upload, g_loaded_done, g_up_done, g_volume = 70;
+static sfx_send_fn g_send;
 static pthread_mutex_t g_mx = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
-static int g_req = -1;
 
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint32_t rd32(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
 
-/* PCM 16-bit mono/stereo WAV -> 48 kHz stereo, scaled by volume (0-100) */
-static int load_wav(const char *path, int volume, sound_t *out) {
+/* PCM 16-bit mono/stereo WAV -> 48 kHz stereo (full scale; the renderer applies the volume) */
+static int load_wav(const char *path, sound_t *out) {
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
     fseek(f, 0, SEEK_END);
@@ -105,7 +100,7 @@ static int load_wav(const char *path, int volume, sound_t *out) {
             unsigned cc = ch == 1 ? 0 : c;
             int16_t s0 = (int16_t)rd16(data + ((size_t)a * ch + cc) * 2);
             int16_t s1 = (int16_t)rd16(data + ((size_t)b * ch + cc) * 2);
-            double v = (s0 + (s1 - s0) * t) * volume / 100.0;
+            double v = s0 + (s1 - s0) * t;
             pcm[i * 2 + c] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
         }
     }
@@ -115,95 +110,59 @@ static int load_wav(const char *path, int volume, sound_t *out) {
     return 0;
 }
 
-static int read_volume(void) {
-    int v = 70;
-    FILE *f = fopen(SFX_DIR "volume.txt", "r");
-    if (f) { int x; if (fscanf(f, "%d", &x) == 1) v = x < 0 ? 0 : x > 100 ? 100 : x; fclose(f); }
-    return v;
-}
-
-static int g_port_type = -1;
-static char g_err[160];
-
-static int open_audio(audio_output_fn *output) {
-    if (!sceKernelLoadStartModule || !sceKernelDlsym) { snprintf(g_err, sizeof g_err, "no module loader"); return -1; }
-    int mod = sceKernelLoadStartModule("/system/common/lib/libSceAudioOut.sprx", 0, 0, 0, 0, 0);
-    if (mod < 0) mod = sceKernelLoadStartModule("libSceAudioOut.sprx", 0, 0, 0, 0, 0);
-    if (mod < 0) { snprintf(g_err, sizeof g_err, "load libSceAudioOut 0x%x", (unsigned)mod); return -1; }
-    audio_init_fn init = 0; audio_open_fn open_ = 0; audio_output_fn out = 0;
-    sceKernelDlsym(mod, "sceAudioOutInit", (void **)&init);
-    sceKernelDlsym(mod, "sceAudioOutOpen", (void **)&open_);
-    sceKernelDlsym(mod, "sceAudioOutOutput", (void **)&out);
-    if (!open_ || !out) { snprintf(g_err, sizeof g_err, "audio symbols missing"); return -1; }
-    int ir = init ? init() : 0;
-    SLOG("sceAudioOutInit -> 0x%x", (unsigned)ir);
-    /* user id 0xFF = system; port types: 0 MAIN, 1 BGM, 3 PERSONAL, 127 AUX. Format 1 = S16 stereo. */
-    static const int TYPES[] = {0, 1, 127, 3};
-    g_err[0] = 0;
-    for (unsigned i = 0; i < sizeof TYPES / sizeof TYPES[0]; i++) {
-        int h = open_(0xFF, TYPES[i], 0, GRAIN, RATE, 1);
-        if (h >= 0) { *output = out; g_port_type = TYPES[i]; return h; }
-        SLOG("sceAudioOutOpen type %d failed (0x%x)", TYPES[i], (unsigned)h);
-        size_t used = strlen(g_err);
-        if (i < 2) snprintf(g_err + used, sizeof g_err - used, "%st%d:0x%x", used ? " " : "", TYPES[i], (unsigned)h);
+/* resolve the audio functions inside SceShellUI and upload everything (once per overlay link) */
+static void try_upload(void) {
+    pthread_mutex_lock(&g_mx);
+    if (!g_need_upload || !g_send || !g_loaded_done || g_pid <= 0) { pthread_mutex_unlock(&g_mx); return; }
+    g_need_upload = 0;
+    uint32_t kh = 0;
+    if (kernel_dynlib_handle(g_pid, "libSceAudioOut.sprx", &kh) < 0 || !kh) {
+        SLOG("ShellUI (pid %d) has no libSceAudioOut loaded", g_pid);
+        sfx_note("Sound effects unavailable: the PS5 UI has no audio library");
+        pthread_mutex_unlock(&g_mx);
+        return;
     }
-    return -1;
-}
-
-/* 0.25 s test tone straight to the port: proves the audio path works even without WAV files */
-static void play_test_tone(audio_output_fn output, int h) {
-    int16_t grain[GRAIN * 2];
-    uint32_t total = RATE / 4, pos = 0;
-    while (pos < total) {
-        for (int i = 0; i < GRAIN; i++) {
-            uint32_t k = pos + (uint32_t)i;
-            int amp = k < total ? (int)(6000 - (uint64_t)6000 * k / total) : 0;   /* fade out */
-            int16_t v = (int16_t)(((k * 880 / RATE) & 1) ? amp : -amp);                  /* 440 Hz square */
-            grain[i * 2] = grain[i * 2 + 1] = v;
-        }
-        output(h, grain);
-        pos += GRAIN;
+    ovl_audio a;
+    memset(&a, 0, sizeof a);
+    a.open = (uint64_t)kernel_dynlib_dlsym(g_pid, kh, "sceAudioOutOpen");
+    a.output = (uint64_t)kernel_dynlib_dlsym(g_pid, kh, "sceAudioOutOutput");
+    char nid[12];
+    if (!a.open && nid_encode("sceAudioOutOpen", nid)) a.open = (uint64_t)kernel_dynlib_resolve(g_pid, kh, nid);
+    if (!a.output && nid_encode("sceAudioOutOutput", nid)) a.output = (uint64_t)kernel_dynlib_resolve(g_pid, kh, nid);
+    if (!a.open || !a.output) {
+        SLOG("ShellUI audio functions not found (open=%d output=%d)", a.open != 0, a.output != 0);
+        sfx_note("Sound effects unavailable: audio functions not found");
+        pthread_mutex_unlock(&g_mx);
+        return;
     }
+    for (int i = 0; i < SFX_COUNT; i++) {
+        if (!g_snd[i].pcm) continue;
+        uint32_t id = (uint32_t)i;
+        g_send(OVL_SNDDATA, &id, 4, g_snd[i].pcm, g_snd[i].frames * 4);
+    }
+    uint32_t vol = (uint32_t)g_volume;
+    g_send(OVL_SNDVOL, &vol, 4, 0, 0);
+    g_send(OVL_AUDIO, &a, sizeof a, 0, 0);
+    g_up_done = 1;
+    SLOG("sounds sent to ShellUI (volume %d)", g_volume);
+    pthread_mutex_unlock(&g_mx);
 }
 
 static void *sfx_thread(void *arg) {
     (void)arg;
-    int volume = read_volume(), loaded = 0;
+    int loaded = 0;
     for (int i = 0; i < SFX_COUNT; i++) {
         char path[96];
         for (int n = 0; n < 2; n++) {
             snprintf(path, sizeof path, SFX_DIR "%s", NAMES[i][n]);
-            int rc = load_wav(path, volume, &g_snd[i]);
+            int rc = load_wav(path, &g_snd[i]);
             if (!rc) { loaded++; break; }
             if (rc != -1) { SLOG("%s: unsupported or bad WAV (%d)", path, rc); break; }
         }
     }
-    audio_output_fn output = 0;
-    int h = open_audio(&output);
-    if (h < 0) { sfx_note("SFX: audio could not open (%s)", g_err[0] ? g_err : "unknown"); return 0; }
-    if (!loaded) { sfx_note("SFX: audio OK (port %d) but no WAV files in /data/ldmod/sfx/", g_port_type); }
-    else if (volume <= 0) { sfx_note("SFX: audio OK but volume.txt is 0"); }
-    else sfx_note("SFX ready: %d sound(s), port %d, volume %d", loaded, g_port_type, volume);
-    play_test_tone(output, h);
-    if (!loaded || volume <= 0) return 0;
-    g_ready = 1;
-
-    int16_t grain[GRAIN * 2];
-    const sound_t *cur = 0;
-    uint32_t pos = 0;
-    for (;;) {
-        pthread_mutex_lock(&g_mx);
-        while (g_req < 0 && !cur) pthread_cond_wait(&g_cv, &g_mx);
-        if (g_req >= 0) { cur = g_snd[g_req].pcm ? &g_snd[g_req] : 0; pos = 0; g_req = -1; }
-        pthread_mutex_unlock(&g_mx);
-        if (!cur) continue;
-        memset(grain, 0, sizeof grain);
-        uint32_t n = cur->frames - pos < GRAIN ? cur->frames - pos : GRAIN;
-        memcpy(grain, cur->pcm + (size_t)pos * 2, (size_t)n * 2 * sizeof(int16_t));
-        pos += n;
-        output(h, grain);          /* blocks for one grain: this paces the loop */
-        if (pos >= cur->frames) cur = 0;
-    }
+    SLOG("%d sound file(s) loaded", loaded);
+    g_loaded_done = 1;
+    if (loaded) try_upload();
     return 0;
 }
 
@@ -212,10 +171,27 @@ void sfx_init(void) {
     if (pthread_create(&t, 0, sfx_thread, 0) == 0) pthread_detach(t);
 }
 
-void sfx_play(int which) {
-    if (!g_ready || which < 0 || which >= SFX_COUNT || !g_snd[which].pcm) return;
+void sfx_link_up(int shellui_pid, sfx_send_fn send) {
     pthread_mutex_lock(&g_mx);
-    g_req = which;
-    pthread_cond_signal(&g_cv);
+    g_pid = shellui_pid; g_send = send; g_need_upload = 1; g_up_done = 0;
     pthread_mutex_unlock(&g_mx);
+    try_upload();
+}
+
+void sfx_set_volume(int percent) {
+    g_volume = percent < 0 ? 0 : percent > 100 ? 100 : percent;
+    if (g_up_done && g_send) {
+        uint32_t vol = (uint32_t)g_volume;
+        g_send(OVL_SNDVOL, &vol, 4, 0, 0);
+    }
+}
+
+void sfx_play(int which) {
+    if (g_volume <= 0 || !g_up_done || !g_send || which < 0 || which >= SFX_COUNT || !g_snd[which].pcm) return;
+    uint32_t id = (uint32_t)which;
+    g_send(OVL_SNDPLAY, &id, 4, 0, 0);
+}
+
+void sfx_status(const char *msg) {
+    if (!strncmp(msg, "SFX!", 4)) sfx_note("%s", msg + 4);
 }
