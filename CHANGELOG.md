@@ -1,3 +1,17 @@
+# Unreleased — Picker sound effects (Ayan4k)
+
+- **Sound effects in the console picker**, the same four sounds as LegoToypad: Navigate (the
+  highlighted item changes), Select (Cross), Move and Remove (a figure was moved or cleared).
+  A new sound cuts the previous one.
+- **Played from SceShellUI.** A payload process cannot use the PS5 audio stack (`sceAudioOutInit`
+  never returns there), so the payload only decodes the WAV files and hands the PCM to the renderer
+  inside SceShellUI over the overlay link (new messages `OVL_AUDIO`, `OVL_SNDDATA`, `OVL_SNDPLAY`,
+  `OVL_SNDVOL`). The renderer opens the audio port and mixes.
+- **Settings → Sound volume** (Off, 10-100 %, default 70 %) and `sfx_volume` in `config.ini`.
+- The sounds come from LegoToypad's `Assets/SFX` and are put in `/data/ldmod/web/sfx` by
+  `tools/make_web_bundle.sh`. Missing files are silent; a notification appears only if the PS5
+  refuses to open audio.
+
 # 2.0.4 — No more system-software crash loop (SpiderNic96)
 
 - **Crash-loop guard for the console picker.** On a 7.20 console the picker crashed SceShellUI

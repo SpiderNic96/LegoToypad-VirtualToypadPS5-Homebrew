@@ -6,7 +6,8 @@
 
 The console picker in `src/injector/cui.c` re-implements LegoToypad's picker, `tools/bundle/patch_gen.py`
 extends LegoToypad's `generate_assets.py`, and the release's `data/ldmod/web` folder contains
-LegoToypad's phone web app (unchanged) and assets rendered from LegoToypad's asset tree
+LegoToypad's phone web app (unchanged), its picker sound effects (`Assets/SFX`, copied unchanged to
+`data/ldmod/web/sfx`) and assets rendered from LegoToypad's asset tree
 (https://github.com/harrysof/LegoToypad).
 
 ```

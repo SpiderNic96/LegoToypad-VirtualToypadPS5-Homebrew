@@ -10,6 +10,7 @@ One ELF payload gives you:
   **live toypad LEDs**, worlds, rosters, vehicle builds, favourites, sorts, **search**, a
   **sneak peek** while you play and a **Settings** screen.
 - **A phone remote** — LegoToypad's own web app served by the PS5 to any phone on your Wi-Fi.
+- **Picker sound effects** — LegoToypad's navigate / select / move / remove sounds, with a volume setting.
 - **60 FPS** and **1440p / 2160p internal resolution** patches (connorh315's patches).
 
 Built on top of **HeitorSpectre's [Virtual Toy Pad](https://github.com/HeitorSpectre/Virtual-Toy-Pad)**
@@ -116,6 +117,8 @@ the live LEDs in the screen corners (Small / Medium / Large, or Off).
 
 **Fast loading** — on by default: the picker closes as soon as a figure is placed.
 
+**Sound effects** — moving in the picker, selecting, moving and clearing a figure play LegoToypad's sounds (`/data/ldmod/web/sfx/*.wav`, part of the web folder). The payload hands them to SceShellUI, which plays them; set the level under **Settings → Sound volume** or `sfx_volume` in `config.ini`. If a sound file is missing it is simply silent.
+
 **Settings** (Triangle on the pad screen; everything is saved to `config.ini`)
 
 | Row | Choices |
@@ -128,6 +131,7 @@ the live LEDs in the screen corners (Small / Medium / Large, or Off).
 | Sneak peek | Off, Small, Medium, Large |
 | Toypad LEDs | show the game's toypad lights or not |
 | Fast loading | On / Off |
+| Sound volume | Off, 10-100 % (default 70 %); plays a sound so you hear the new level |
 | Web remote | shows the address to open on your phone |
 | Clear all pads / Reset all settings | one-shot actions |
 
@@ -193,6 +197,7 @@ resolution=1080
 | `overlay` | `1` | console picker on; `0` = classic text menu |
 | `peek_buttons` / `peek_size` | `L2` / `2` | sneak peek buttons; 0 off, 1 small, 2 medium, 3 large |
 | `fast_load` | `1` | close the picker after loading |
+| `sfx_volume` | `70` | picker sound effects volume, 0-100 (0 = off) |
 | `overlay_background` | `0` | 0 default, 1 Clear, 2-26 wallpapers |
 | `overlay_opacity` | `92` | 20-100 |
 | `pad_skin` | `0` | 0 Toypad, 1 Default, 2 Old, 3 Plain |
