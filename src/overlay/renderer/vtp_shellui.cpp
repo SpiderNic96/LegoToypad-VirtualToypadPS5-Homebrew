@@ -1388,6 +1388,56 @@ void handle_frame(const std::uint8_t* p, const std::uint8_t* end) {
     pthread_mutex_unlock(&g_state_mx);
 }
 
+/* ---- UI sound effects: played from inside SceShellUI, which already owns the audio stack ---- */
+using aout_init_fn = int (*)();
+using aout_open_fn = int (*)(int, int, int, std::uint32_t, std::uint32_t, std::uint32_t);
+using aout_output_fn = int (*)(int, const void*);
+constexpr int kSndCount = 4;
+constexpr int kGrain = 256;
+std::vector<std::int16_t> g_snd[kSndCount];
+pthread_mutex_t g_snd_mx = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t g_snd_cv = PTHREAD_COND_INITIALIZER;
+int g_snd_req = -1;
+bool g_snd_thread_started = false;
+ovl_audio g_audio{};
+int g_snd_vol = 70;      /* percent, set by OVL_SNDVOL */
+
+void* sound_thread(void*) {
+    auto open_ = reinterpret_cast<aout_open_fn>(g_audio.open);
+    auto output = reinterpret_cast<aout_output_fn>(g_audio.output);
+    if (!open_ || !output) { log_line("SFX!Sound effects: audio functions missing"); return nullptr; }
+    int h = -1, used = -1;
+    static const int kTypes[] = {0, 1, 127, 3};
+    for (int t : kTypes) {
+        h = open_(0xFF, t, 0, kGrain, 48000, 1);
+        if (h >= 0) { used = t; break; }
+        log_line("sfx: open type %d error 0x%x", t, (unsigned)h);
+    }
+    if (h < 0) { log_line("SFX!Sound effects: the PS5 refused to open audio"); return nullptr; }
+    log_line("sfx: ready, port type %d", used);
+    std::int16_t grain[kGrain * 2];
+    int cur = -1;
+    std::size_t pos = 0;
+    for (;;) {
+        pthread_mutex_lock(&g_snd_mx);
+        while (g_snd_req < 0 && cur < 0) pthread_cond_wait(&g_snd_cv, &g_snd_mx);
+        if (g_snd_req >= 0) { cur = g_snd[g_snd_req].empty() ? -1 : g_snd_req; pos = 0; g_snd_req = -1; }
+        bool have = cur >= 0;
+        std::memset(grain, 0, sizeof grain);
+        if (have) {
+            std::size_t total = g_snd[cur].size() / 2;
+            std::size_t n = total - pos < (std::size_t)kGrain ? total - pos : (std::size_t)kGrain;
+            std::memcpy(grain, g_snd[cur].data() + pos * 2, n * 4);
+            for (std::size_t i = 0; i < n * 2; ++i) grain[i] = (std::int16_t)((int)grain[i] * g_snd_vol / 100);
+            pos += n;
+            if (pos >= total) cur = -1;
+        }
+        pthread_mutex_unlock(&g_snd_mx);
+        if (have) output(h, grain);
+    }
+    return nullptr;
+}
+
 void handle_message(int fd, const ovl_msg& h, std::vector<std::uint8_t>& body) {
     const std::uint8_t* p = body.data();
     const std::uint8_t* end = p + body.size();
@@ -1433,6 +1483,43 @@ void handle_message(int fd, const ovl_msg& h, std::vector<std::uint8_t>& body) {
     case OVL_CONFIG: {
         ovl_config c{};
         if (take(p, end, c)) g_tex_mode_pref = c.tex_mode;
+        break;
+    }
+    case OVL_AUDIO: {
+        ovl_audio a{};
+        if (!take(p, end, a)) return;
+        pthread_mutex_lock(&g_snd_mx);
+        g_audio = a;
+        bool start = !g_snd_thread_started;
+        g_snd_thread_started = true;
+        pthread_mutex_unlock(&g_snd_mx);
+        if (start) { pthread_t t; pthread_create(&t, nullptr, sound_thread, nullptr); pthread_detach(t); }
+        break;
+    }
+    case OVL_SNDDATA: {
+        std::uint32_t id = 0;
+        if (!take(p, end, id) || id >= (std::uint32_t)kSndCount) return;
+        pthread_mutex_lock(&g_snd_mx);
+        g_snd[id].resize((std::size_t)(end - p) / 2);
+        std::memcpy(g_snd[id].data(), p, g_snd[id].size() * 2);
+        pthread_mutex_unlock(&g_snd_mx);
+        break;
+    }
+    case OVL_SNDVOL: {
+        std::uint32_t v = 0;
+        if (!take(p, end, v)) return;
+        pthread_mutex_lock(&g_snd_mx);
+        g_snd_vol = v > 100 ? 100 : (int)v;
+        pthread_mutex_unlock(&g_snd_mx);
+        break;
+    }
+    case OVL_SNDPLAY: {
+        std::uint32_t id = 0;
+        if (!take(p, end, id) || id >= (std::uint32_t)kSndCount) return;
+        pthread_mutex_lock(&g_snd_mx);
+        g_snd_req = (int)id;
+        pthread_cond_signal(&g_snd_cv);
+        pthread_mutex_unlock(&g_snd_mx);
         break;
     }
     case OVL_PING:

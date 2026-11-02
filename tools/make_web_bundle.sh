@@ -15,4 +15,6 @@ cp "$here/build_bundle.py" "$work/"
 ${CC:-cc} -O2 -I"$repo/src/core" -o "$work/figid" "$here/bundle/figid.c" "$repo/src/core/ldproto.c"
 python3 "$work/build_bundle.py" "$ltp" "$out" "$work/figid"
 python3 "$here/build_ui_pack.py" "$ltp" "$out"
+# picker sound effects (LegoToypad Assets/SFX, MIT): the payload plays them from <web>/sfx
+if [ -d "$ltp/Assets/SFX" ]; then mkdir -p "$out/sfx" && cp "$ltp"/Assets/SFX/*.wav "$out/sfx/"; fi
 echo "web folder ready: $out  (copy it to /data/ldmod/web on the PS5)"
